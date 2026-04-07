@@ -13,9 +13,18 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.receiptsnap.internal",
+      "infoPlist": {
+        "NSCameraUsageDescription": "ReceiptSnap needs camera access to photograph receipts.",
+        "NSPhotoLibraryUsageDescription": "ReceiptSnap needs photo library access to import receipt images.",
+        "NSPhotoLibraryAddUsageDescription": "ReceiptSnap saves receipt images to your photo library.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "buildNumber": "2"
     },
     "android": {
+      "package": "com.receiptsnap.internal",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -25,6 +34,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "ad9c6460-a134-47d5-ba3c-07b438e679e8"
+      }
+    },
+    "owner": "bethlehem1989"
   }
 }
