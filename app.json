@@ -21,10 +21,11 @@
         "NSPhotoLibraryAddUsageDescription": "ReceiptSnap saves receipt images to your photo library.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "2"
+      "buildNumber": "8"
     },
     "android": {
       "package": "com.receiptsnap.internal",
+      "versionCode": 2,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
