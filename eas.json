@@ -9,7 +9,7 @@
         "simulator": true
       }
     },
-    "preview": {
+    "distribute": {
       "android": {
         "distribution": "internal",
         "buildType": "apk"
@@ -21,7 +21,7 @@
     }
   },
   "submit": {
-    "preview": {
+    "distribute": {
       "ios": {
         "ascAppId": "6761752105"
       }
