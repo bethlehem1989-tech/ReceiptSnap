@@ -1,9 +1,9 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { ANTHROPIC_API_KEY } from '../constants';
+import { QIANWEN_API_KEY } from '../constants';
 import { OcrResult } from '../types';
 import { preprocessReceiptImage } from '../utils/imagePreprocessing';
 
-const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+const QIANWEN_API_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
 
 // ─── Prompt ───────────────────────────────────────────────────────────────
 
@@ -50,33 +50,29 @@ export async function extractReceiptData(
     encoding: FileSystem.EncodingType.Base64,
   });
 
-  // Step 3 — send to Claude Vision
-  return await extractWithClaude(base64);
+  // Step 3 — send to Qianwen Vision
+  return await extractWithQianwen(base64);
 }
 
-// ─── Claude Vision ────────────────────────────────────────────────────────
+// ─── Qianwen Vision ───────────────────────────────────────────────────────
 
-async function extractWithClaude(base64Image: string): Promise<OcrResult> {
-  const response = await fetch(CLAUDE_API_URL, {
+async function extractWithQianwen(base64Image: string): Promise<OcrResult> {
+  const response = await fetch(QIANWEN_API_URL, {
     method: 'POST',
     headers: {
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
+      'Authorization': `Bearer ${QIANWEN_API_KEY}`,
+      'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-5',
-      max_tokens: 1024,
+      model: 'qwen-vl-plus',
       messages: [
         {
           role: 'user',
           content: [
             {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/jpeg',
-                data: base64Image,
+              type: 'image_url',
+              image_url: {
+                url: `data:image/jpeg;base64,${base64Image}`,
               },
             },
             {
@@ -91,20 +87,20 @@ async function extractWithClaude(base64Image: string): Promise<OcrResult> {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${errorText}`);
+    throw new Error(`Qianwen API error ${response.status}: ${errorText}`);
   }
 
   const data = await response.json();
-  const text: string = data.content?.[0]?.text ?? '';
+  const text: string = data.choices?.[0]?.message?.content ?? '';
 
-  return parseClaudeResponse(text);
+  return parseResponse(text);
 }
 
 // ─── Parser ───────────────────────────────────────────────────────────────
 
-function parseClaudeResponse(text: string): OcrResult {
+function parseResponse(text: string): OcrResult {
   try {
-    // Strip markdown code fences if Claude adds them despite instructions
+    // Strip markdown code fences if model adds them despite instructions
     const cleaned = text
       .replace(/^```(?:json)?\n?/m, '')
       .replace(/\n?```$/m, '')

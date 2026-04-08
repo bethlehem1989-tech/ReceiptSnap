@@ -4,6 +4,11 @@
     "appVersionSource": "local"
   },
   "build": {
+    "simulator": {
+      "ios": {
+        "simulator": true
+      }
+    },
     "preview": {
       "android": {
         "distribution": "internal",
