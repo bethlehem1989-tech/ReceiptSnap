@@ -40,3 +40,14 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# marketing assets — large video + audio model files, kept locally only
+marketing/
+
+# npm lockfile — project uses bun (bun.lock is the source of truth)
+package-lock.json
+
+# local helper scripts (machine-specific)
+build-local.sh
+start-tunnel.sh
+start.sh

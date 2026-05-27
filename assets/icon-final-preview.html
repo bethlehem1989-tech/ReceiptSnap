@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>ReceiptSnap · Final icon preview</title>
+<style>
+  body {
+    background: linear-gradient(135deg, #2c2c2e 0%, #1c1c1e 100%);
+    color: #fff;
+    font-family: -apple-system, "PingFang SC", system-ui, sans-serif;
+    padding: 40px 20px;
+    margin: 0;
+    min-height: 100vh;
+  }
+  h1 { font-size: 24px; font-weight: 800; text-align: center; }
+  .sub { text-align: center; color: #98989F; font-size: 13px; margin-top: 6px; }
+
+  .stage {
+    display: flex; flex-wrap: wrap; justify-content: center;
+    gap: 50px; padding: 50px 20px; align-items: flex-start;
+  }
+  .item { text-align: center; }
+  .label { font-size: 13px; font-weight: 700; margin-top: 16px; }
+  .desc { font-size: 11px; color: #98989F; margin-top: 4px; }
+
+  /* iOS squircle ≈ 22.37% radius */
+  .icon-180  { width: 180px; height: 180px; border-radius: 40px; overflow: hidden; box-shadow: 0 14px 30px -10px rgba(0,0,0,0.7); }
+  .icon-120  { width: 120px; height: 120px; border-radius: 27px; overflow: hidden; box-shadow: 0 10px 20px -8px rgba(0,0,0,0.7); }
+  .icon-80   { width: 80px;  height: 80px;  border-radius: 18px; overflow: hidden; box-shadow: 0 6px 14px -4px rgba(0,0,0,0.7); }
+  .icon-60   { width: 60px;  height: 60px;  border-radius: 13px; overflow: hidden; box-shadow: 0 4px 10px -3px rgba(0,0,0,0.7); }
+  .icon-180 svg, .icon-120 svg, .icon-80 svg, .icon-60 svg { display: block; width: 100%; height: 100%; }
+
+  .home {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(0,0,0,0.2) 100%),
+      url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="800" viewBox="0 0 400 800"><defs><linearGradient id="g" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="%2378A1B8"/><stop offset="100%" stop-color="%23445D7A"/></linearGradient></defs><rect width="400" height="800" fill="url(%23g)"/></svg>');
+    background-size: cover;
+    border-radius: 40px;
+    padding: 40px 24px;
+    width: 280px;
+    margin: 0 auto;
+  }
+  .home-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px 18px; }
+  .home-app { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .home-app-name { font-size: 9px; color: #fff; opacity: 0.92; text-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+  .home-app-name.ours { font-weight: 700; }
+  .placeholder { width: 52px; height: 52px; border-radius: 12px; background: linear-gradient(135deg, #ff9d80, #ff6b5c); }
+  .placeholder.b { background: linear-gradient(135deg, #6db4f5, #2d6cdf); }
+  .placeholder.c { background: linear-gradient(135deg, #c5e8a4, #5a9839); }
+  .placeholder.d { background: linear-gradient(135deg, #f0d56e, #d99326); }
+  .placeholder.e { background: linear-gradient(135deg, #d5b0ff, #7a4dd1); }
+  .placeholder.f { background: linear-gradient(135deg, #ff9aae, #d63b6f); }
+</style>
+</head>
+<body>
+
+<h1>ReceiptSnap · 图标真机预览（v2 收据放大版）</h1>
+<div class="sub">所有尺寸都套了 iOS 22.5% 圆角遮罩 — 这就是 home screen 上的样子</div>
+
+<div class="stage">
+  <!-- Single big preview -->
+  <div class="item">
+    <div class="icon-180">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="bg1" x1="0%" y1="0%" x2="50%" y2="100%">
+            <stop offset="0%"   stop-color="#445A47"/>
+            <stop offset="55%"  stop-color="#2D4A3D"/>
+            <stop offset="100%" stop-color="#1A2F22"/>
+          </linearGradient>
+          <linearGradient id="paper1" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stop-color="#FBF8F0"/>
+            <stop offset="100%" stop-color="#E8DEC7"/>
+          </linearGradient>
+          <filter id="rcptS1" x="-15%" y="-15%" width="130%" height="130%">
+            <feGaussianBlur in="SourceAlpha" stdDeviation="26"/>
+            <feOffset dx="0" dy="24" result="off"/>
+            <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <rect width="1024" height="1024" fill="url(#bg1)"/>
+        <circle cx="200" cy="180" r="260" fill="#5A7060" opacity="0.10"/>
+        <circle cx="900" cy="900" r="300" fill="#1A2F22" opacity="0.45"/>
+        <g transform="translate(232 142)" filter="url(#rcptS1)">
+          <path d="M 0 0 L 560 0 L 560 700 L 540 720 L 520 700 L 500 720 L 480 700 L 460 720 L 440 700 L 420 720 L 400 700 L 380 720 L 360 700 L 340 720 L 320 700 L 300 720 L 280 700 L 260 720 L 240 700 L 220 720 L 200 700 L 180 720 L 160 700 L 140 720 L 120 700 L 100 720 L 80 700 L 60 720 L 40 700 L 20 720 L 0 700 Z" fill="url(#paper1)"/>
+          <line x1="50" y1="80" x2="510" y2="80" stroke="#8B8B7E" stroke-width="4" stroke-dasharray="10 8" opacity="0.55"/>
+          <rect x="50" y="108" width="220" height="18" rx="4" fill="#5A5A52" opacity="0.65"/>
+          <rect x="50" y="148" width="320" height="11" rx="3" fill="#8B8B7E" opacity="0.45"/>
+          <rect x="420" y="148" width="90" height="11" rx="3" fill="#5A5A52" opacity="0.60"/>
+          <rect x="50" y="178" width="280" height="11" rx="3" fill="#8B8B7E" opacity="0.45"/>
+          <rect x="420" y="178" width="90" height="11" rx="3" fill="#5A5A52" opacity="0.60"/>
+          <rect x="50" y="208" width="300" height="11" rx="3" fill="#8B8B7E" opacity="0.45"/>
+          <rect x="420" y="208" width="90" height="11" rx="3" fill="#5A5A52" opacity="0.60"/>
+          <line x1="50" y1="248" x2="510" y2="248" stroke="#8B8B7E" stroke-width="4" stroke-dasharray="10 8" opacity="0.55"/>
+          <rect x="50" y="600" width="200" height="8" rx="2" fill="#8B8B7E" opacity="0.30"/>
+          <rect x="50" y="624" width="160" height="8" rx="2" fill="#8B8B7E" opacity="0.30"/>
+          <rect x="50" y="648" width="220" height="8" rx="2" fill="#8B8B7E" opacity="0.30"/>
+        </g>
+        <text x="512" y="595" text-anchor="middle" font-family="-apple-system,'SF Pro Display',sans-serif" font-size="600" font-weight="900" fill="#1F3A2D" letter-spacing="-18">R</text>
+        <g transform="translate(512 760)">
+          <rect x="-94" y="-26" width="188" height="52" rx="7" fill="none" stroke="#1F3A2D" stroke-width="4" opacity="0.55"/>
+          <text x="0" y="11" text-anchor="middle" font-family="-apple-system,monospace" font-size="32" font-weight="800" fill="#1F3A2D" letter-spacing="3" opacity="0.75">TOTAL</text>
+        </g>
+      </svg>
+    </div>
+    <div class="label">App 详情页（180×180）</div>
+    <div class="desc">所有细节清晰</div>
+  </div>
+
+  <div class="item">
+    <div class="icon-120">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="bg2" x1="0%" y1="0%" x2="50%" y2="100%">
+            <stop offset="0%"   stop-color="#445A47"/>
+            <stop offset="55%"  stop-color="#2D4A3D"/>
+            <stop offset="100%" stop-color="#1A2F22"/>
+          </linearGradient>
+          <linearGradient id="paper2" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stop-color="#FBF8F0"/>
+            <stop offset="100%" stop-color="#E8DEC7"/>
+          </linearGradient>
+        </defs>
+        <rect width="1024" height="1024" fill="url(#bg2)"/>
+        <g transform="translate(232 142)">
+          <path d="M 0 0 L 560 0 L 560 700 L 540 720 L 520 700 L 500 720 L 480 700 L 460 720 L 440 700 L 420 720 L 400 700 L 380 720 L 360 700 L 340 720 L 320 700 L 300 720 L 280 700 L 260 720 L 240 700 L 220 720 L 200 700 L 180 720 L 160 700 L 140 720 L 120 700 L 100 720 L 80 700 L 60 720 L 40 700 L 20 720 L 0 700 Z" fill="url(#paper2)"/>
+          <rect x="50" y="108" width="220" height="18" rx="4" fill="#5A5A52" opacity="0.65"/>
+          <rect x="50" y="148" width="320" height="11" rx="3" fill="#8B8B7E" opacity="0.45"/>
+          <rect x="420" y="148" width="90" height="11" rx="3" fill="#5A5A52" opacity="0.60"/>
+        </g>
+        <text x="512" y="595" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="600" font-weight="900" fill="#1F3A2D" letter-spacing="-18">R</text>
+      </svg>
+    </div>
+    <div class="label">120×120</div>
+    <div class="desc">App Store 列表</div>
+  </div>
+
+  <div class="item">
+    <div class="icon-80">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="bg3" x1="0%" y1="0%" x2="50%" y2="100%">
+            <stop offset="0%"   stop-color="#445A47"/>
+            <stop offset="100%" stop-color="#1A2F22"/>
+          </linearGradient>
+          <linearGradient id="paper3" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stop-color="#FBF8F0"/>
+            <stop offset="100%" stop-color="#E8DEC7"/>
+          </linearGradient>
+        </defs>
+        <rect width="1024" height="1024" fill="url(#bg3)"/>
+        <g transform="translate(232 142)">
+          <path d="M 0 0 L 560 0 L 560 700 L 540 720 L 520 700 L 500 720 L 480 700 L 460 720 L 440 700 L 420 720 L 400 700 L 380 720 L 360 700 L 340 720 L 320 700 L 300 720 L 280 700 L 260 720 L 240 700 L 220 720 L 200 700 L 180 720 L 160 700 L 140 720 L 120 700 L 100 720 L 80 700 L 60 720 L 40 700 L 20 720 L 0 700 Z" fill="url(#paper3)"/>
+        </g>
+        <text x="512" y="595" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="600" font-weight="900" fill="#1F3A2D" letter-spacing="-18">R</text>
+      </svg>
+    </div>
+    <div class="label">80×80</div>
+    <div class="desc">Spotlight</div>
+  </div>
+
+  <div class="item">
+    <div class="icon-60">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="bg4" x1="0%" y1="0%" x2="50%" y2="100%">
+            <stop offset="0%"   stop-color="#445A47"/>
+            <stop offset="100%" stop-color="#1A2F22"/>
+          </linearGradient>
+          <linearGradient id="paper4" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stop-color="#FBF8F0"/>
+            <stop offset="100%" stop-color="#E8DEC7"/>
+          </linearGradient>
+        </defs>
+        <rect width="1024" height="1024" fill="url(#bg4)"/>
+        <g transform="translate(232 142)">
+          <path d="M 0 0 L 560 0 L 560 700 L 540 720 L 520 700 L 500 720 L 480 700 L 460 720 L 440 700 L 420 720 L 400 700 L 380 720 L 360 700 L 340 720 L 320 700 L 300 720 L 280 700 L 260 720 L 240 700 L 220 720 L 200 700 L 180 720 L 160 700 L 140 720 L 120 700 L 100 720 L 80 700 L 60 720 L 40 700 L 20 720 L 0 700 Z" fill="url(#paper4)"/>
+        </g>
+        <text x="512" y="595" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="600" font-weight="900" fill="#1F3A2D" letter-spacing="-18">R</text>
+      </svg>
+    </div>
+    <div class="label">60×60</div>
+    <div class="desc">通知 / 设置（收据轮廓清晰可见）</div>
+  </div>
+</div>
+
+<!-- Mock home screen -->
+<div style="text-align: center; margin-top: 30px;">
+  <div class="sub" style="margin-bottom: 14px;">在 iOS 真实 home screen 上的视觉对比</div>
+  <div class="home">
+    <div class="home-grid">
+      <div class="home-app"><div class="placeholder"></div><div class="home-app-name">微信</div></div>
+      <div class="home-app"><div class="placeholder b"></div><div class="home-app-name">设置</div></div>
+      <div class="home-app">
+        <div style="width: 52px; height: 52px; border-radius: 12px; overflow: hidden;">
+          <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" style="display: block; width: 100%; height: 100%;">
+            <defs>
+              <linearGradient id="bg5" x1="0%" y1="0%" x2="50%" y2="100%">
+                <stop offset="0%"   stop-color="#445A47"/>
+                <stop offset="55%"  stop-color="#2D4A3D"/>
+                <stop offset="100%" stop-color="#1A2F22"/>
+              </linearGradient>
+              <linearGradient id="paper5" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%"   stop-color="#FBF8F0"/>
+                <stop offset="100%" stop-color="#E8DEC7"/>
+              </linearGradient>
+            </defs>
+            <rect width="1024" height="1024" fill="url(#bg5)"/>
+            <g transform="translate(232 142)">
+              <path d="M 0 0 L 560 0 L 560 700 L 540 720 L 520 700 L 500 720 L 480 700 L 460 720 L 440 700 L 420 720 L 400 700 L 380 720 L 360 700 L 340 720 L 320 700 L 300 720 L 280 700 L 260 720 L 240 700 L 220 720 L 200 700 L 180 720 L 160 700 L 140 720 L 120 700 L 100 720 L 80 700 L 60 720 L 40 700 L 20 720 L 0 700 Z" fill="url(#paper5)"/>
+            </g>
+            <text x="512" y="595" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="600" font-weight="900" fill="#1F3A2D" letter-spacing="-18">R</text>
+          </svg>
+        </div>
+        <div class="home-app-name ours">ReceiptSnap</div>
+      </div>
+      <div class="home-app"><div class="placeholder c"></div><div class="home-app-name">日历</div></div>
+      <div class="home-app"><div class="placeholder d"></div><div class="home-app-name">备忘录</div></div>
+      <div class="home-app"><div class="placeholder e"></div><div class="home-app-name">照片</div></div>
+      <div class="home-app"><div class="placeholder f"></div><div class="home-app-name">音乐</div></div>
+      <div class="home-app"><div class="placeholder b"></div><div class="home-app-name">浏览器</div></div>
+    </div>
+  </div>
+</div>
+
+<div style="text-align:center; padding: 30px 20px 60px; color: #98989F; font-size: 12px; max-width: 700px; margin: 0 auto;">
+  v2 改动：收据 364×556 → 560×740（+54% 面积）；R 460pt → 600pt；去掉取景框（小尺寸看不清反而干扰）。<br>
+  确认后我转成 PNG 替换三个尺寸的图标文件。
+</div>
+
+</body>
+</html>

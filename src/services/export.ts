@@ -1,18 +1,23 @@
 /**
- * CSV export service — replaces ExcelJS which crashes Hermes at import time.
- * CSV opens natively in Excel, Numbers and Google Sheets.
- * All converted amounts are expressed in CNY (人民币).
+ * CSV export service.
+ * CSV opens natively in Excel, Numbers, and Google Sheets — and unlike the
+ * old ExcelJS path it doesn't crash Hermes at import time.
+ * All converted amounts are expressed in CNY.
  */
+import { format } from 'date-fns';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { format } from 'date-fns';
-import { convertToCny } from './currency';
 import { ExportOptions, Receipt } from '../types';
-import { getReceiptsByDateRange } from './receipts';
+import { convertToCny } from './currency';
+import { getReceiptsForExport } from './receipts';
 
 const CATEGORY_ZH: Record<string, string> = {
-  meals: '餐饮', transport: '交通', accommodation: '住宿',
-  entertainment: '娱乐', office: '办公', other: '其他',
+  meals: '餐饮',
+  transport: '交通',
+  accommodation: '住宿',
+  entertainment: '娱乐',
+  office: '办公',
+  other: '其他',
 };
 
 export async function exportReceiptsToExcel(
@@ -22,17 +27,19 @@ export async function exportReceiptsToExcel(
   const startStr = format(options.startDate, 'yyyy-MM-dd');
   const endStr   = format(options.endDate,   'yyyy-MM-dd');
 
-  const receipts = await getReceiptsByDateRange(userId, startStr, endStr);
+  // v1.2 fix #21: exclude drafts + 金额不符凭证 from CSV
+  const receipts = await getReceiptsForExport(userId, startStr, endStr);
 
   if (receipts.length === 0) {
-    throw new Error('该时间段内没有收据数据，请选择其他时间范围');
+    throw new Error('该时间段内没有可导出的票据（草稿与金额不符的票据已自动排除）');
   }
 
-  const csv      = await buildCsv(receipts, startStr, endStr);
+  const csv = await buildCsv(receipts, startStr, endStr);
   const filename = `receipts_${startStr}_to_${endStr}.csv`;
   const tempPath = `${FileSystem.cacheDirectory}${filename}`;
 
-  const BOM = '\uFEFF';
+  // UTF-8 BOM so Excel opens Chinese characters correctly
+  const BOM = '﻿';
   await FileSystem.writeAsStringAsync(tempPath, BOM + csv, {
     encoding: FileSystem.EncodingType.UTF8,
   });
@@ -46,8 +53,6 @@ export async function exportReceiptsToExcel(
   }
 }
 
-// ─── CSV builder ──────────────────────────────────────────────────────────────
-
 async function buildCsv(
   receipts: Receipt[],
   startStr: string,
@@ -55,18 +60,17 @@ async function buildCsv(
 ): Promise<string> {
   const rows: string[] = [];
 
-  // Resolve CNY equivalent for every receipt
-  // (use stored value when available, otherwise call live API)
-  const resolvedCny: (number | null)[] = await Promise.all(
-    receipts.map((r) => (r as any).amount_cny != null
-      ? Promise.resolve((r as any).amount_cny as number)
-      : convertToCny(r.amount, r.currency)),
+  const resolvedCny = await Promise.all(
+    receipts.map((r) =>
+      (r as any).amount_cny != null
+        ? Promise.resolve((r as any).amount_cny as number)
+        : convertToCny(r.amount, r.currency),
+    ),
   );
 
-  // ── Summary section ──────────────────────────────────────────────────────
   rows.push(esc('汇总'));
   rows.push(row('日期范围', `${startStr} 至 ${endStr}`));
-  rows.push(row('收据数量', String(receipts.length)));
+  rows.push(row('票据数量', String(receipts.length)));
 
   const byCurrency: Record<string, number> = {};
   const byCategory: Record<string, number> = {};
@@ -97,15 +101,12 @@ async function buildCsv(
 
   rows.push('');
   rows.push('');
+  rows.push(esc('票据明细'));
 
-  // ── Detail section ───────────────────────────────────────────────────────
-  rows.push(esc('收据明细'));
-  // Always include the payment columns — they are empty when no proof exists.
-  // This ensures a consistent column layout for downstream processing.
-  // IMPORTANT: statistics use "收据等值人民币" only. "付款等值人民币" is for
-  // transparency only and must NOT be used to compute totals.
+  // Statistics use "票据等值人民币" only. Payment columns are for transparency
+  // and must NOT be used to compute totals.
   const headers = [
-    '日期', '商户名称', '原始金额', '原始币种', '收据等值人民币',
+    '日期', '商户名称', '原始金额', '原始币种', '票据等值人民币',
     '付款金额', '付款币种', '付款等值人民币',
     '凭证匹配', '分类', '备注',
   ];
@@ -119,9 +120,10 @@ async function buildCsv(
     else if (r.payment_match_status === 'mismatch') matchLabel = '⚠ 金额不符';
     else if (r.payment_image_url) matchLabel = '? 未验证';
 
-    const payAmt  = r.payment_amount   != null ? String(r.payment_amount)         : '';
-    const payCur  = r.payment_currency ?? '';
-    const payCny  = r.payment_amount_cny != null ? `¥${r.payment_amount_cny.toFixed(2)}` : '';
+    const payAmt = r.payment_amount != null ? String(r.payment_amount) : '';
+    const payCur = r.payment_currency ?? '';
+    const payCny =
+      r.payment_amount_cny != null ? `¥${r.payment_amount_cny.toFixed(2)}` : '';
 
     const cols = [
       r.date,
@@ -147,7 +149,12 @@ function row(key: string, value: string): string {
 }
 
 function esc(value: string): string {
-  if (value.includes(',') || value.includes('"') || value.includes('\r') || value.includes('\n')) {
+  if (
+    value.includes(',') ||
+    value.includes('"') ||
+    value.includes('\r') ||
+    value.includes('\n')
+  ) {
     return `"${value.replace(/"/g, '""')}"`;
   }
   return value;

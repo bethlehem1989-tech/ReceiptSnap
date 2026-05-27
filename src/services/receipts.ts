@@ -121,10 +121,46 @@ export async function getReceiptsByDateRange(
   return data ?? [];
 }
 
+/**
+ * Receipts eligible for export (v1.2 #21):
+ *   - non-draft
+ *   - either no payment proof OR payment proof matched (excludes mismatch)
+ */
+export async function getReceiptsForExport(
+  userId: string,
+  startDate: string,
+  endDate: string,
+): Promise<Receipt[]> {
+  const all = await getReceiptsByDateRange(userId, startDate, endDate);
+  return all.filter((r) => {
+    if (r.is_draft) return false;
+    if (r.payment_match_status === 'mismatch') return false;
+    return true;
+  });
+}
+
+/**
+ * Fetch a single receipt by id without throwing on "not found" (v1.2 #17).
+ * Uses .maybeSingle() so a deleted receipt returns null instead of the
+ * "Cannot coerce result to single JSON object" PostgREST error.
+ */
+export async function getReceiptById(id: string): Promise<Receipt | null> {
+  const { data, error } = await supabase
+    .from('receipts')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(error.message ?? String(error));
+  return data;
+}
+
 export async function updateReceipt(
   id: string,
   updates: Partial<Receipt>,
 ): Promise<Receipt> {
+  // v1.2 #14 defensive: stripNullish drops undefined/null entries so passing
+  // `payment_image_url: undefined` does NOT clear a previously-saved proof.
+  // Callers that genuinely want to remove a field must pass an empty string.
   const payload = stripNullish({
     ...updates as Record<string, unknown>,
     updated_at: new Date().toISOString(),
@@ -146,6 +182,66 @@ export async function updateReceipt(
 export async function deleteReceipt(id: string): Promise<void> {
   const { error } = await supabase.from('receipts').delete().eq('id', id);
   if (error) throw error;
+}
+
+// ─── Duplicate detection ──────────────────────────────────────────────────
+//
+// A receipt is considered a likely duplicate when the user already has one
+// with the SAME date + currency, an amount within 1% (rounding tolerance),
+// and either the same merchant string or the same category. This catches
+// the common "I already photographed this same lunch yesterday" case
+// without false-positive flagging two genuinely separate $5 metro tickets
+// taken on the same day.
+
+export type DuplicateMatch = {
+  receipt: Receipt;
+  reason: string;
+};
+
+export async function findDuplicateReceipts(
+  userId: string,
+  candidate: {
+    date: string;
+    amount: number;
+    currency: string;
+    description?: string;
+    category?: string;
+  },
+): Promise<DuplicateMatch[]> {
+  if (!candidate.date || !(candidate.amount > 0)) return [];
+
+  const { data, error } = await supabase
+    .from('receipts')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('date', candidate.date)
+    .eq('currency', candidate.currency);
+
+  if (error || !data) return [];
+
+  const tolerance = Math.max(candidate.amount * 0.01, 0.01); // 1% or 1 cent
+  const matches: DuplicateMatch[] = [];
+  for (const r of data) {
+    const amountClose = Math.abs(r.amount - candidate.amount) <= tolerance;
+    if (!amountClose) continue;
+
+    const sameMerchant =
+      candidate.description && r.description &&
+      candidate.description.trim().toLowerCase() === r.description.trim().toLowerCase();
+    const sameCategory =
+      candidate.category && r.category && candidate.category === r.category;
+
+    if (sameMerchant) {
+      matches.push({ receipt: r, reason: '同日期、同金额、同商户' });
+    } else if (sameCategory) {
+      matches.push({ receipt: r, reason: '同日期、同金额、同分类' });
+    } else {
+      // Same date+amount+currency without merchant or category match — still
+      // worth showing the user since duplicates often arrive without a name.
+      matches.push({ receipt: r, reason: '同日期、同金额' });
+    }
+  }
+  return matches;
 }
 
 // ─── Monthly Summary ──────────────────────────────────────────────────────

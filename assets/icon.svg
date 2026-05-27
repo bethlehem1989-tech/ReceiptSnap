@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    ReceiptSnap App Icon · 1024×1024
+    Minimal: army-green canvas + cream receipt silhouette + a single dashed
+    separator (so the paper reads as a "receipt") + bold "R" centered on it.
+  -->
+
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%"   stop-color="#445A47"/>
+      <stop offset="55%"  stop-color="#2D4A3D"/>
+      <stop offset="100%" stop-color="#1A2F22"/>
+    </linearGradient>
+
+    <linearGradient id="paper" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#FBF8F0"/>
+      <stop offset="100%" stop-color="#E8DEC7"/>
+    </linearGradient>
+
+    <filter id="rcptShadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="26"/>
+      <feOffset dx="0" dy="24" result="off"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.55"/></feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- ═══ Full-bleed army green background ═══ -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- Subtle texture: highlights and shadow blobs -->
+  <circle cx="200" cy="180" r="260" fill="#5A7060" opacity="0.10"/>
+  <circle cx="900" cy="900" r="300" fill="#1A2F22" opacity="0.45"/>
+
+  <!-- ═══ Receipt silhouette ═══
+       560×740 (body 720 + 20 zigzag), centered, no rotation. -->
+  <g transform="translate(232 142)" filter="url(#rcptShadow)">
+    <path d="M 0 0
+             L 560 0
+             L 560 700
+             L 540 720 L 520 700 L 500 720 L 480 700
+             L 460 720 L 440 700 L 420 720 L 400 700
+             L 380 720 L 360 700 L 340 720 L 320 700
+             L 300 720 L 280 700 L 260 720 L 240 700
+             L 220 720 L 200 700 L 180 720 L 160 700
+             L 140 720 L 120 700 L 100 720 L 80 700
+             L 60 720 L 40 700 L 20 720 L 0 700 Z"
+          fill="url(#paper)"/>
+
+    <!-- Single dashed separator near the top: the only "this is a receipt" cue -->
+    <line x1="60" y1="80" x2="500" y2="80"
+          stroke="#8B8B7E" stroke-width="4" stroke-dasharray="12 8" opacity="0.55"/>
+  </g>
+
+  <!-- ═══ Big "R" perfectly centered on the receipt ═══
+       Receipt center is (canvas) x=512, y=502.
+       For font-size 660, cap-height ≈ 460. Baseline = 502 + 230 ≈ 732. -->
+  <text x="512" y="732"
+        text-anchor="middle"
+        font-family="-apple-system, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif"
+        font-size="660"
+        font-weight="900"
+        fill="#1F3A2D"
+        letter-spacing="-20">R</text>
+</svg>

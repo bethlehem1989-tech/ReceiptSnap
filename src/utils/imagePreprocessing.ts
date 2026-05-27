@@ -1,26 +1,54 @@
 import * as ImageManipulator from 'expo-image-manipulator';
+import { isLikelyOverseas } from '../services/aiProvider';
 
 /**
  * Preprocesses a receipt image before sending to OCR.
  *
- * Steps:
- *  1. Resize — normalise to max 1600px width (Vision APIs don't benefit beyond this)
- *  2. Save as high-quality JPEG — keeps file size reasonable while preserving detail
+ * Two-step pipeline (v1.2.0 #23):
+ *  1. Bake EXIF orientation into pixels by running manipulateAsync with an
+ *     empty actions array. Without this step, landscape-captured photos can
+ *     reach the OCR endpoint with the receipt content lying sideways, because
+ *     some EXIF Orientation tags (esp. 6/8 from iPhone landscape shots in a
+ *     portrait-locked app) are not consistently honoured downstream.
+ *  2. Resize the now-pixel-correct image to a 1800 px long edge. 1800 keeps
+ *     A4 增值税发票 small print legible while keeping uploads under ~700 KB.
  *
- * Note: expo-image-manipulator doesn't expose contrast/brightness directly.
- * Claude Vision handles low-contrast thermal receipts through its own image
- * understanding, so resizing + quality normalisation is the right pre-step.
+ * `targetLongEdge` lets the caller pick a smaller size for slow overseas
+ * uploads (~1000 cuts payload to ~250 KB).
  */
-export async function preprocessReceiptImage(uri: string): Promise<string> {
-  const result = await ImageManipulator.manipulateAsync(
+export async function preprocessReceiptImage(
+  uri: string,
+  /**
+   * Pass an explicit long edge to override the auto-detected default.
+   * Default: 1800 in mainland China, 1200 overseas (smaller upload survives
+   * hotel/airport WiFi better).
+   */
+  targetLongEdge?: number,
+): Promise<string> {
+  const longEdge = targetLongEdge ?? (isLikelyOverseas() ? 1200 : 1800);
+  // Step 1: bake EXIF orientation. Empty action array forces the library to
+  // re-encode the pixels in their displayed orientation.
+  const normalized = await ImageManipulator.manipulateAsync(
     uri,
-    [
-      // Normalise width — 800 px is enough for Claude Vision and keeps
-      // the upload small (~150 KB), which cuts round-trip time significantly
-      { resize: { width: 800 } },
-    ],
+    [],
     {
-      compress: 0.88,   // slightly lower quality is fine at 800 px
+      compress: 1.0,
+      format: ImageManipulator.SaveFormat.JPEG,
+    },
+  );
+
+  // Step 2: resize to the long edge so landscape A4 invoices and portrait
+  // thermal receipts both get the same pixel budget for fine print.
+  const isLandscape = normalized.width >= normalized.height;
+  const resizeAction: ImageManipulator.Action = isLandscape
+    ? { resize: { width: longEdge } }
+    : { resize: { height: longEdge } };
+
+  const result = await ImageManipulator.manipulateAsync(
+    normalized.uri,
+    [resizeAction],
+    {
+      compress: 0.9,
       format: ImageManipulator.SaveFormat.JPEG,
     },
   );

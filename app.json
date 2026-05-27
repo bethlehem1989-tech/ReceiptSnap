@@ -2,7 +2,7 @@
   "expo": {
     "name": "ReceiptSnap",
     "slug": "ReceiptSnap",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#F4EFE3"
     },
     "ios": {
       "supportsTablet": true,
@@ -21,14 +21,14 @@
         "NSPhotoLibraryAddUsageDescription": "ReceiptSnap saves receipt images to your photo library.",
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "8"
+      "buildNumber": "23"
     },
     "android": {
       "package": "com.receiptsnap.internal",
       "versionCode": 2,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#2D4A3D"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false

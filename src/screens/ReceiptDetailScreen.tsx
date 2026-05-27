@@ -1,19 +1,23 @@
-import * as ImagePicker from 'expo-image-picker';
+import { Ionicons } from '@expo/vector-icons';
 import { RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { format } from 'date-fns';
+import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
-import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
+import { AmbientBackground } from '../components/AmbientBackground';
+import { GlassCard } from '../components/GlassCard';
+import { CATEGORY_LABELS } from '../constants/i18n';
+import { Colors, Radius, Spacing, Typography } from '../constants/theme';
 import { ReceiptsStackParamList } from '../navigation';
 import { convertToCny } from '../services/currency';
 import { extractReceiptData } from '../services/ocr';
@@ -47,14 +51,41 @@ export default function ReceiptDetailScreen({ route, navigation }: Props) {
   const [addingProof, setAddingProof] = useState(false);
 
   useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => loadReceipt());
     loadReceipt();
-  }, [receiptId]);
+    return unsubscribe;
+  }, [receiptId, navigation]);
+
+  // Show "Edit" button in the navigation header so users can switch to
+  // EditReceiptScreen for completed receipts (previously edit was draft-only).
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <Pressable
+          onPress={() => navigation.navigate('EditReceipt', { receiptId })}
+          hitSlop={10}
+          style={({ pressed }) => [{ opacity: pressed ? 0.55 : 1 }]}
+        >
+          <Text style={s.headerEditText}>编辑</Text>
+        </Pressable>
+      ),
+    });
+  }, [navigation, receiptId]);
 
   async function loadReceipt() {
+    // v1.2 #17: use maybeSingle() so a record deleted from a child screen
+    // doesn't throw "Cannot coerce result to single JSON object" when we
+    // re-load on focus.
     const { data, error } = await supabase
-      .from('receipts').select('*').eq('id', receiptId).single();
-    if (error) Alert.alert('Error', error.message);
-    else setReceipt(data);
+      .from('receipts').select('*').eq('id', receiptId).maybeSingle();
+    if (error) {
+      Alert.alert('Error', error.message);
+    } else if (!data) {
+      // Receipt was deleted while we were away — pop back to list silently.
+      navigation.goBack();
+    } else {
+      setReceipt(data);
+    }
     setLoading(false);
   }
 
@@ -64,8 +95,13 @@ export default function ReceiptDetailScreen({ route, navigation }: Props) {
       {
         text: '删除', style: 'destructive',
         onPress: async () => {
-          await deleteReceipt(receiptId);
-          navigation.goBack();
+          try {
+            await deleteReceipt(receiptId);
+            navigation.goBack();
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            Alert.alert('删除失败', msg);
+          }
         },
       },
     ]);
@@ -89,7 +125,6 @@ export default function ReceiptDetailScreen({ route, navigation }: Props) {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { Alert.alert('未登录'); return; }
 
-      // OCR the proof to extract amount/currency, then compare in CNY
       let matchStatus: 'matched' | 'mismatch' = 'mismatch';
       let mismatchMsg = '';
       let proofAmount: number | undefined;
@@ -118,7 +153,6 @@ export default function ReceiptDetailScreen({ route, navigation }: Props) {
       const proofUrl = await uploadReceiptImage(proofUri, user.id);
 
       if (matchStatus === 'mismatch' && mismatchMsg) {
-        // Ask for notes before saving
         await new Promise<void>((resolve) => {
           Alert.alert(
             '⚠️ 金额不匹配',
@@ -172,119 +206,139 @@ export default function ReceiptDetailScreen({ route, navigation }: Props) {
   }
 
   if (loading) {
-    return <View style={s.center}><ActivityIndicator size="large" color={Colors.primary} /></View>;
+    return (
+      <AmbientBackground>
+        <View style={s.center}><ActivityIndicator size="large" color={Colors.textPrimary} /></View>
+      </AmbientBackground>
+    );
   }
   if (!receipt) {
-    return <View style={s.center}><Text style={Typography.body}>收据未找到</Text></View>;
+    return (
+      <AmbientBackground>
+        <View style={s.center}><Text style={Typography.body}>收据未找到</Text></View>
+      </AmbientBackground>
+    );
   }
 
   const catColor = CATEGORY_COLORS[(receipt.category as ReceiptCategory) ?? 'other'];
   const matchStatus = receipt.payment_match_status;
+  const catLabel = receipt.category ? (CATEGORY_LABELS[receipt.category] ?? receipt.category) : '未分类';
 
   return (
-    <ScrollView style={s.screen} showsVerticalScrollIndicator={false}>
-      {/* Receipt image */}
-      <Image source={{ uri: receipt.image_url }} style={s.heroImage} />
-
-      {/* Hero amount card */}
-      <View style={s.heroCard}>
-        <Text style={s.heroAmount}>
-          {receipt.amount.toLocaleString()} {receipt.currency}
-        </Text>
-        {receipt.amount_usd != null && (
-          <Text style={s.heroUsd}>≈ ${receipt.amount_usd.toFixed(2)} USD</Text>
-        )}
-        {(receipt as any).amount_cny != null && (
-          <Text style={s.heroUsd}>≈ ¥{(receipt as any).amount_cny.toFixed(2)} CNY</Text>
-        )}
-        {receipt.category && (
-          <View style={[s.heroCategoryPill, { backgroundColor: catColor + '25' }]}>
-            <Text style={[s.heroCategoryText, { color: catColor }]}>
-              {receipt.category}
-            </Text>
+    <AmbientBackground>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: 100, paddingBottom: 200 }}>
+        {receipt.image_url ? (
+          <Image source={{ uri: receipt.image_url }} style={s.heroImage} />
+        ) : (
+          <View style={s.heroImagePlaceholder}>
+            <Ionicons name="document-text-outline" size={48} color={Colors.textTertiary} />
           </View>
         )}
-      </View>
 
-      {/* Details card */}
-      <View style={s.card}>
-        <DetailRow icon="🏪" label="商户" value={receipt.description || '—'} />
-        <DetailRow icon="📅" label="日期" value={format(new Date(receipt.date), 'MMMM d, yyyy')} />
-        {receipt.notes && <DetailRow icon="📝" label="备注" value={receipt.notes} />}
-      </View>
-
-      {/* Payment proof card */}
-      <View style={s.card}>
-        <View style={s.proofHeader}>
-          <Text style={[Typography.label, { flex: 1 }]}>付款凭证</Text>
-          {matchStatus === 'matched' && (
-            <View style={s.matchBadgeGreen}><Text style={s.matchBadgeText}>✓ 已匹配</Text></View>
+        <GlassCard preset="thick" radius={Radius.xl} shadow="hero" style={s.heroCardWrap} contentStyle={s.heroCardContent}>
+          <Text style={s.heroAmount}>
+            {receipt.amount.toLocaleString()} <Text style={s.heroCurrency}>{receipt.currency}</Text>
+          </Text>
+          {receipt.amount_usd != null && (
+            <Text style={s.heroUsd}>≈ ${receipt.amount_usd.toFixed(2)} USD</Text>
           )}
-          {matchStatus === 'mismatch' && (
-            <View style={s.matchBadgeRed}><Text style={s.matchBadgeText}>⚠ 金额不符</Text></View>
+          {(receipt as any).amount_cny != null && (
+            <Text style={s.heroUsd}>≈ ¥{(receipt as any).amount_cny.toFixed(2)} CNY</Text>
           )}
-        </View>
+          <View style={[s.heroCategoryPill, { backgroundColor: catColor + '24' }]}>
+            <Text style={[s.heroCategoryText, { color: catColor }]}>{catLabel}</Text>
+          </View>
+        </GlassCard>
 
-        {receipt.payment_image_url ? (
-          <View style={{ marginTop: 10 }}>
-            <Image source={{ uri: receipt.payment_image_url }} style={s.proofImage} />
-            <TouchableOpacity
-              style={[s.proofReplaceBtn, addingProof && { opacity: 0.5 }]}
+        <GlassCard preset="regular" shadow="sm" style={s.card} contentStyle={s.cardContent}>
+          <DetailRow icon="storefront-outline" label="商户" value={receipt.description || '—'} />
+          <DetailRow icon="calendar-outline" label="日期" value={receipt.date ? format(new Date(receipt.date), 'yyyy年M月d日') : '—'} />
+          {receipt.notes && <DetailRow icon="reader-outline" label="备注" value={receipt.notes} />}
+        </GlassCard>
+
+        <GlassCard preset="regular" shadow="sm" style={s.card} contentStyle={s.cardContent}>
+          <View style={s.proofHeader}>
+            <Text style={[Typography.label, { flex: 1 }]}>付款凭证</Text>
+            {matchStatus === 'matched' && (
+              <View style={s.matchBadgeGreen}>
+                <Ionicons name="checkmark-circle" size={14} color="#0F766E" />
+                <Text style={[s.matchBadgeText, { color: '#0F766E' }]}>已匹配</Text>
+              </View>
+            )}
+            {matchStatus === 'mismatch' && (
+              <View style={s.matchBadgeRed}>
+                <Ionicons name="alert-circle" size={14} color="#B91C1C" />
+                <Text style={[s.matchBadgeText, { color: '#B91C1C' }]}>金额不符</Text>
+              </View>
+            )}
+          </View>
+
+          {receipt.payment_image_url ? (
+            <View style={{ marginTop: 10 }}>
+              <Image source={{ uri: receipt.payment_image_url }} style={s.proofImage} />
+              <Pressable
+                onPress={showAddProofOptions}
+                disabled={addingProof}
+                style={({ pressed }) => [s.proofReplaceBtn, addingProof && { opacity: 0.5 }, pressed && { opacity: 0.6 }]}
+              >
+                {addingProof
+                  ? <ActivityIndicator size="small" color={Colors.accent} />
+                  : <Text style={s.proofReplaceBtnText}>更换凭证</Text>
+                }
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              style={({ pressed }) => [s.proofAddBtn, addingProof && { opacity: 0.5 }, pressed && { opacity: 0.7 }]}
               onPress={showAddProofOptions}
               disabled={addingProof}
             >
-              {addingProof
-                ? <ActivityIndicator size="small" color={Colors.primary} />
-                : <Text style={s.proofReplaceBtnText}>🔄 更换凭证</Text>
-              }
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <TouchableOpacity
-            style={[s.proofAddBtn, addingProof && { opacity: 0.5 }]}
-            onPress={showAddProofOptions}
-            disabled={addingProof}
-          >
-            {addingProof ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <ActivityIndicator size="small" color={Colors.primary} />
-                <Text style={s.proofAddBtnText}>正在识别凭证...</Text>
-              </View>
-            ) : (
-              <Text style={s.proofAddBtnText}>＋ 添加付款凭证（可选）</Text>
-            )}
-          </TouchableOpacity>
+              {addingProof ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <ActivityIndicator size="small" color={Colors.accent} />
+                  <Text style={s.proofAddBtnText}>正在识别凭证...</Text>
+                </View>
+              ) : (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="add-circle-outline" size={18} color={Colors.accent} />
+                  <Text style={s.proofAddBtnText}>添加付款凭证（可选）</Text>
+                </View>
+              )}
+            </Pressable>
+          )}
+        </GlassCard>
+
+        {receipt.ocr_confidence != null && receipt.ocr_confidence > 0 && (
+          <GlassCard preset="thin" shadow="sm" style={s.card} contentStyle={s.confidenceCardContent}>
+            <Text style={s.confidenceLabel}>AI 识别置信度</Text>
+            <View style={s.confidenceBarTrack}>
+              <View style={[s.confidenceBarFill, {
+                width: `${Math.round(receipt.ocr_confidence * 100)}%` as any,
+                backgroundColor: receipt.ocr_confidence > 0.7 ? Colors.success : Colors.warning,
+              }]} />
+            </View>
+            <Text style={s.confidenceValue}>{Math.round(receipt.ocr_confidence * 100)}%</Text>
+          </GlassCard>
         )}
-      </View>
 
-      {/* OCR confidence */}
-      {receipt.ocr_confidence != null && receipt.ocr_confidence > 0 && (
-        <View style={s.ocrBadgeCard}>
-          <Text style={s.ocrBadgeLabel}>AI 识别置信度</Text>
-          <View style={s.ocrBarTrack}>
-            <View style={[s.ocrBarFill, {
-              width: `${Math.round(receipt.ocr_confidence * 100)}%` as any,
-              backgroundColor: receipt.ocr_confidence > 0.7 ? Colors.success : Colors.warning,
-            }]} />
-          </View>
-          <Text style={s.ocrBadgeValue}>{Math.round(receipt.ocr_confidence * 100)}%</Text>
-        </View>
-      )}
-
-      {/* Delete */}
-      <TouchableOpacity style={s.deleteBtn} onPress={handleDelete}>
-        <Text style={s.deleteBtnText}>删除收据</Text>
-      </TouchableOpacity>
-
-      <View style={{ height: 40 }} />
-    </ScrollView>
+        <Pressable
+          onPress={handleDelete}
+          style={({ pressed }) => [s.deleteBtn, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons name="trash-outline" size={16} color={Colors.danger} />
+          <Text style={s.deleteBtnText}>删除收据</Text>
+        </Pressable>
+      </ScrollView>
+    </AmbientBackground>
   );
 }
 
-function DetailRow({ icon, label, value }: { icon: string; label: string; value: string }) {
+function DetailRow({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: string }) {
   return (
     <View style={s.detailRow}>
-      <Text style={s.detailIcon}>{icon}</Text>
+      <View style={s.detailIconWrap}>
+        <Ionicons name={icon} size={18} color={Colors.textPrimary} />
+      </View>
       <View style={{ flex: 1 }}>
         <Text style={s.detailLabel}>{label}</Text>
         <Text style={s.detailValue}>{value}</Text>
@@ -294,59 +348,80 @@ function DetailRow({ icon, label, value }: { icon: string; label: string; value:
 }
 
 const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: Colors.background },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+  headerEditText: { fontSize: 16, color: Colors.accent, fontWeight: '600' },
+
   heroImage: { width: '100%', height: 280, resizeMode: 'cover' },
-  heroCard: {
-    backgroundColor: Colors.surface, marginHorizontal: Spacing.md,
-    marginTop: -Spacing.xl, borderRadius: Radius.xl, padding: Spacing.lg,
-    alignItems: 'center', ...Shadows.lg,
+  heroImagePlaceholder: {
+    width: '100%', height: 220, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.surfaceTertiary,
   },
-  heroAmount: { fontSize: 36, fontWeight: '800', color: Colors.textPrimary, letterSpacing: -1 },
+
+  heroCardWrap: {
+    marginHorizontal: Spacing.md,
+    marginTop: -Spacing.xl,
+  },
+  heroCardContent: {
+    padding: Spacing.lg,
+    alignItems: 'center',
+  },
+  heroAmount: { fontSize: 38, fontWeight: '800', color: Colors.textPrimary, letterSpacing: -1.2 },
+  heroCurrency: { fontSize: 18, fontWeight: '600', color: Colors.textSecondary },
   heroUsd: { fontSize: 14, color: Colors.textSecondary, marginTop: 4 },
-  heroCategoryPill: { marginTop: 10, paddingHorizontal: 14, paddingVertical: 6, borderRadius: Radius.full },
-  heroCategoryText: { fontSize: 13, fontWeight: '700', textTransform: 'capitalize' },
-  card: {
-    backgroundColor: Colors.surface, marginHorizontal: Spacing.md,
-    marginTop: Spacing.md, borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md, ...Shadows.sm,
-  },
+  heroCategoryPill: { marginTop: 12, paddingHorizontal: 14, paddingVertical: 6, borderRadius: Radius.full },
+  heroCategoryText: { fontSize: 13, fontWeight: '700' },
+
+  card: { marginHorizontal: Spacing.md, marginTop: Spacing.md },
+  cardContent: { paddingHorizontal: Spacing.md },
   detailRow: {
-    flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border, gap: 12,
+    flexDirection: 'row', alignItems: 'flex-start',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.hairline,
+    gap: 12,
   },
-  detailIcon: { fontSize: 20, marginTop: 2 },
-  detailLabel: { fontSize: 11, fontWeight: '600', color: Colors.textTertiary, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
+  detailIconWrap: {
+    width: 32, height: 32,
+    borderRadius: 10,
+    backgroundColor: Colors.surfaceTertiary,
+    alignItems: 'center', justifyContent: 'center',
+    marginTop: 1,
+  },
+  detailLabel: { fontSize: 11, fontWeight: '700', color: Colors.textTertiary, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 2 },
   detailValue: { fontSize: 15, fontWeight: '500', color: Colors.textPrimary },
 
-  // Payment proof
-  proofHeader: { flexDirection: 'row', alignItems: 'center', paddingTop: Spacing.md, paddingBottom: 4 },
-  matchBadgeGreen: { backgroundColor: '#D1FAE5', paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
-  matchBadgeRed: { backgroundColor: '#FEE2E2', paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
-  matchBadgeText: { fontSize: 12, fontWeight: '700', color: Colors.textPrimary },
+  proofHeader: { flexDirection: 'row', alignItems: 'center', paddingTop: Spacing.md, paddingBottom: 4, gap: 8 },
+  matchBadgeGreen: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.successLight, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
+  matchBadgeRed: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.dangerLight, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
+  matchBadgeText: { fontSize: 12, fontWeight: '700' },
   proofImage: { width: '100%', height: 200, borderRadius: Radius.sm, resizeMode: 'cover' },
   proofReplaceBtn: { marginTop: 10, marginBottom: Spacing.md, alignItems: 'center' },
-  proofReplaceBtnText: { fontSize: 13, color: Colors.primary, fontWeight: '600' },
+  proofReplaceBtnText: { fontSize: 13, color: Colors.accent, fontWeight: '600' },
   proofAddBtn: {
     marginVertical: Spacing.md, paddingVertical: 16, borderRadius: Radius.sm,
     borderWidth: 1.5, borderColor: Colors.border, borderStyle: 'dashed',
-    alignItems: 'center', backgroundColor: Colors.surfaceSecondary,
+    alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.4)',
   },
-  proofAddBtnText: { fontSize: 14, color: Colors.primary, fontWeight: '600' },
+  proofAddBtnText: { fontSize: 14, color: Colors.accent, fontWeight: '600' },
 
-  ocrBadgeCard: {
-    backgroundColor: Colors.surface, marginHorizontal: Spacing.md, marginTop: Spacing.md,
-    borderRadius: Radius.lg, padding: Spacing.md,
-    flexDirection: 'row', alignItems: 'center', gap: 10, ...Shadows.sm,
+  confidenceCardContent: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    padding: Spacing.md,
   },
-  ocrBadgeLabel: { fontSize: 12, color: Colors.textSecondary, fontWeight: '500', width: 90 },
-  ocrBarTrack: { flex: 1, height: 6, backgroundColor: Colors.border, borderRadius: 3, overflow: 'hidden' },
-  ocrBarFill: { height: '100%', borderRadius: 3 },
-  ocrBadgeValue: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary, width: 35, textAlign: 'right' },
+  confidenceLabel: { fontSize: 12, color: Colors.textSecondary, fontWeight: '500', width: 90 },
+  confidenceBarTrack: { flex: 1, height: 6, backgroundColor: Colors.surfaceTertiary, borderRadius: 3, overflow: 'hidden' },
+  confidenceBarFill: { height: '100%', borderRadius: 3 },
+  confidenceValue: { fontSize: 12, fontWeight: '700', color: Colors.textPrimary, width: 35, textAlign: 'right' },
 
   deleteBtn: {
-    marginHorizontal: Spacing.md, marginTop: Spacing.md, paddingVertical: 14,
-    borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.danger, alignItems: 'center',
+    flexDirection: 'row',
+    alignItems: 'center', justifyContent: 'center',
+    gap: 8,
+    marginHorizontal: Spacing.md, marginTop: Spacing.md,
+    paddingVertical: 14,
+    borderRadius: Radius.md,
+    borderWidth: 1.5, borderColor: 'rgba(255, 69, 58, 0.4)',
+    backgroundColor: 'rgba(255, 69, 58, 0.06)',
   },
   deleteBtnText: { color: Colors.danger, fontWeight: '600', fontSize: 15 },
 });

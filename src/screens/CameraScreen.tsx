@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { format } from 'date-fns';
+import { BlurView } from 'expo-blur';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useRef, useState } from 'react';
@@ -10,6 +11,7 @@ import {
   KeyboardAvoidingView,
   PanResponder,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,12 +20,20 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { AmbientBackground } from '../components/AmbientBackground';
+import { GlassCard } from '../components/GlassCard';
 import { COMMON_CURRENCIES, RECEIPT_CATEGORIES } from '../constants';
 import { CATEGORY_ICONS, CATEGORY_LABELS, CURRENCY_LABELS } from '../constants/i18n';
-import { Colors, Radius, Shadows, Spacing, Typography } from '../constants/theme';
+import { Colors, Radius, Spacing, Typography } from '../constants/theme';
+import { getActiveProvider } from '../services/aiProvider';
 import { convertToCny, convertToUsd } from '../services/currency';
 import { extractReceiptData } from '../services/ocr';
-import { createReceipt, uploadReceiptImage } from '../services/receipts';
+import {
+  createReceipt,
+  DuplicateMatch,
+  findDuplicateReceipts,
+  uploadReceiptImage,
+} from '../services/receipts';
 import { supabase } from '../services/supabase';
 import { OcrResult, ReceiptCategory } from '../types';
 import { classifyReceiptCategory } from '../utils/classifyReceipt';
@@ -31,7 +41,13 @@ import { preprocessReceiptImage } from '../utils/imagePreprocessing';
 
 type Stage = 'idle' | 'camera' | 'ocr' | 'form' | 'saving';
 
-/** Convert any caught value to a readable string — avoids "[object Object]" */
+/** Discrete zoom presets — maps to expo-camera's `zoom` 0..1 logical scale. */
+const ZOOM_PRESETS = [
+  { label: '1×', value: 0 },
+  { label: '2×', value: 0.25 },
+  { label: '3×', value: 0.5 },
+] as const;
+
 function errMsg(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'object' && err !== null && 'message' in err) {
@@ -40,13 +56,20 @@ function errMsg(err: unknown): string {
   return JSON.stringify(err);
 }
 
-export default function CameraScreen() {
+type CameraScreenProps = {
+  navigation: { goBack: () => void; navigate: (name: string, params?: any) => void };
+  route?: { params?: { manualEntry?: boolean } };
+};
+
+export default function CameraScreen({ navigation, route }: CameraScreenProps) {
+  const startAtManualEntry = route?.params?.manualEntry === true;
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
 
-  const [stage, setStage] = useState<Stage>('idle');
+  const [stage, setStage] = useState<Stage>(startAtManualEntry ? 'form' : 'camera');
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [ocr, setOcr] = useState<OcrResult | null>(null);
+  const [providerLabel, setProviderLabel] = useState('Qwen VL');
 
   const [date, setDate] = useState('');
   const [description, setDescription] = useState('');
@@ -58,9 +81,9 @@ export default function CameraScreen() {
   const [amountUsd, setAmountUsd] = useState<number | null>(null);
   const [amountCny, setAmountCny] = useState<number | null>(null);
 
-  // ── Zoom (pinch-to-zoom) ────────────────────────────────────────────────
+  // ── Zoom (pinch + discrete buttons) ────────────────────────────────────
   const [zoom, setZoom] = useState(0);
-  const zoomRef  = useRef(0);   // ref so PanResponder closure always reads latest
+  const zoomRef = useRef(0);
   const pinchRef = useRef({ startDist: 0, startZoom: 0 });
 
   const pinchResponder = useRef(
@@ -84,7 +107,6 @@ export default function CameraScreen() {
         const dy = t[0].pageY - t[1].pageY;
         const dist  = Math.sqrt(dx * dx + dy * dy);
         const ratio = dist / (pinchRef.current.startDist || 1);
-        // Sensitivity 0.4 feels natural: one full open-to-close pinch ≈ +0.4 zoom
         const next = Math.max(0, Math.min(1, pinchRef.current.startZoom + (ratio - 1) * 0.4));
         zoomRef.current = next;
         setZoom(next);
@@ -95,18 +117,23 @@ export default function CameraScreen() {
   const cancelOcrRef = useRef(false);
   const [proofMatchStatus, setProofMatchStatus] = useState<'checking' | 'matched' | 'mismatch' | null>(null);
   const [proofMatchDetail, setProofMatchDetail] = useState('');
-  // Store the payment proof's OCR'd amount/currency so they can be saved in the DB
   const [proofOcrAmount, setProofOcrAmount] = useState<number | null>(null);
   const [proofOcrCurrency, setProofOcrCurrency] = useState<string | null>(null);
-  // Set to true on first save attempt — triggers red-border on empty required fields
   const [saveTried, setSaveTried] = useState(false);
+
+  // Track which provider is in use, just for the "AI 正在识别" attribution
+  React.useEffect(() => {
+    getActiveProvider().then((p) => setProviderLabel(p.info.shortName));
+  }, [stage]);
+
+  function setZoomPreset(value: number) {
+    zoomRef.current = value;
+    setZoom(value);
+  }
 
   async function handleCapture() {
     const photo = await cameraRef.current?.takePictureAsync({ quality: 0.85 });
     if (!photo) return;
-    // Preprocess once here — shrinks the original 5-10 MB photo to ~400 KB.
-    // The same compressed URI is reused for OCR and local storage,
-    // eliminating the large base64 operations that caused the RangeError.
     const processedUri = await preprocessReceiptImage(photo.uri);
     setImageUri(processedUri);
     await runOcr(processedUri);
@@ -128,7 +155,7 @@ export default function CameraScreen() {
     setStage('ocr');
     try {
       const result = await extractReceiptData(uri, true);
-      if (cancelOcrRef.current) { setStage('idle'); return; }
+      if (cancelOcrRef.current) { navigation.goBack(); return; }
       setOcr(result);
       setDate(result.date ?? '');
       setDescription(result.description ?? '');
@@ -139,9 +166,13 @@ export default function CameraScreen() {
         convertToUsd(result.amount, result.currency).then(setAmountUsd);
         convertToCny(result.amount, result.currency).then(setAmountCny);
       }
-    } catch {
+    } catch (err) {
+      // Silent fall-through to manual form — never block the user. The OCR
+      // raw text (if any) is preserved so they don't lose anything.
       if (!cancelOcrRef.current) {
-        Alert.alert('识别失败', '无法自动读取收据，请手动填写。');
+        // Show a non-blocking toast-style alert with the actual error so
+        // a missing/invalid API key doesn't fail silently.
+        Alert.alert('识别未完成', `${errMsg(err)}\n\n已切换到手动录入。`);
       }
     } finally {
       if (!cancelOcrRef.current) setStage('form');
@@ -155,12 +186,10 @@ export default function CameraScreen() {
     try {
       const proofOcr = await extractReceiptData(proofUri, false);
       if (proofOcr.amount && proofOcr.currency) {
-        // Store proof OCR data so it can be persisted when the receipt is saved
         setProofOcrAmount(proofOcr.amount);
         setProofOcrCurrency(proofOcr.currency);
 
         const receiptAmt = parseFloat(amount);
-        // Compare in CNY — consistent with the app's display currency
         const [receiptCny, proofCny] = await Promise.all([
           convertToCny(receiptAmt, currency),
           convertToCny(proofOcr.amount, proofOcr.currency),
@@ -176,12 +205,10 @@ export default function CameraScreen() {
         }
       }
     } catch { /* OCR unavailable */ }
-    // Could not determine match
     setProofMatchStatus(null);
     setProofMatchDetail('');
   }
 
-  /** Enter camera mode — request permission first if not yet granted */
   async function handleStartCamera() {
     if (!permission?.granted) {
       const result = await requestPermission();
@@ -190,7 +217,6 @@ export default function CameraScreen() {
     setStage('camera');
   }
 
-  /** Skip OCR entirely — go straight to a blank form for manual data entry */
   function handleManualEntry() {
     setImageUri(null);
     setOcr(null);
@@ -204,16 +230,64 @@ export default function CameraScreen() {
     setStage('form');
   }
 
+  /** Returns true if the user agreed to save anyway / no duplicates were found. */
+  async function checkForDuplicates(userId: string): Promise<boolean> {
+    const parsed = parseFloat(amount);
+    if (!date.trim() || !(parsed > 0)) return true;
+
+    let dupes: DuplicateMatch[] = [];
+    try {
+      dupes = await findDuplicateReceipts(userId, {
+        date: date.trim(),
+        amount: parsed,
+        currency,
+        description: description.trim() || undefined,
+        category,
+      });
+    } catch { return true; /* network problem — don't block save */ }
+
+    if (dupes.length === 0) return true;
+
+    return new Promise<boolean>((resolve) => {
+      const top = dupes[0];
+      const summary =
+        `已存在 ${dupes.length} 张相似收据。最相近的一张：\n` +
+        `· ${top.receipt.date} · ${top.receipt.description || '未命名'} · ${top.receipt.amount} ${top.receipt.currency}\n` +
+        `· 相似原因：${top.reason}`;
+      Alert.alert(
+        '⚠️ 可能是重复收据',
+        summary,
+        [
+          { text: '继续保存', onPress: () => resolve(true) },
+          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) },
+      );
+    });
+  }
+
   async function handleSave(asDraft = false) {
-    // ── Form validation — skipped for draft saves ─────────────────────────
+    // v1.2 #7: hard debounce — block re-entry even before stage flips to 'saving'.
+    // The button is also visually disabled, but a rapid double-tap can squeeze
+    // a second invocation through before React commits the next render.
+    if (stage === 'saving') return;
     setSaveTried(true);
     if (!asDraft) {
       const missing: string[] = [];
-      if (!date.trim())                       missing.push('日期');
+      if (!date.trim()) missing.push('日期');
+      // v1.2 #18: merchant required for a complete (non-draft) receipt
+      if (!description.trim()) missing.push('商户名称');
       if (!amount.trim() || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)
-                                              missing.push('金额');
+        missing.push('金额');
       if (missing.length > 0) {
         Alert.alert('请补充必填信息', `以下字段不能为空：\n${missing.join('、')}`);
+        return;
+      }
+    } else {
+      // v1.2 #5: even drafts must have at least one filled field
+      const hasAny = date.trim() || description.trim() || amount.trim();
+      if (!hasAny) {
+        Alert.alert('草稿至少填一项', '日期、商户、金额至少要填一个再保存草稿。');
         return;
       }
     }
@@ -221,13 +295,17 @@ export default function CameraScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { Alert.alert('未登录', '请先登录后再保存收据。'); return; }
 
+    // Duplicate check (skipped for drafts since they're often incomplete)
+    if (!asDraft) {
+      const proceed = await checkForDuplicates(user.id);
+      if (!proceed) return;
+    }
+
     setStage('saving');
     try {
-      // Use defaults for drafts: today's date if empty, 0 if amount invalid
       const parsedAmount = parseFloat(amount) || 0;
       const saveDate = date.trim() || format(new Date(), 'yyyy-MM-dd');
 
-      // Recompute CNY/USD only when amount is meaningful
       let freshAmountUsd: number | null = null;
       let freshAmountCny: number | null = null;
       if (parsedAmount > 0) {
@@ -237,7 +315,6 @@ export default function CameraScreen() {
         ]);
       }
 
-      // Upload image if present; empty string for manual entry with no photo
       const imageUrl = imageUri ? await uploadReceiptImage(imageUri, user.id) : '';
 
       let paymentUrl: string | undefined;
@@ -247,17 +324,12 @@ export default function CameraScreen() {
 
       if (paymentImageUri) {
         paymentUrl = await uploadReceiptImage(paymentImageUri, user.id);
-
         if (proofMatchStatus === 'matched' || proofMatchStatus === 'mismatch') {
           finalMatchStatus = proofMatchStatus;
         }
-
-        // Convert proof amount to CNY for storage (export transparency)
         if (proofOcrAmount != null && proofOcrCurrency != null) {
           finalProofAmountCny = (await convertToCny(proofOcrAmount, proofOcrCurrency)) ?? undefined;
         }
-
-        // Only prompt mismatch notes for complete saves
         if (finalMatchStatus === 'mismatch' && !asDraft) {
           await new Promise<void>((resolve) => {
             Alert.alert(
@@ -308,9 +380,8 @@ export default function CameraScreen() {
         asDraft ? '📋 草稿已保存' : '✅ 保存成功',
         asDraft ? '草稿已保存，可在列表中继续编辑。' : '收据已保存。',
       );
-      handleReset(); // always return to camera after save
+      handleReset();
     } catch (err) {
-      // Keep the form visible so the user can fix issues and retry
       setStage('form');
       Alert.alert('保存失败', errMsg(err));
     }
@@ -336,7 +407,8 @@ export default function CameraScreen() {
   }
 
   function handleReset() {
-    setStage('idle');
+    // After save / discard from the camera flow, drop back to HomeScreen.
+    navigation.goBack();
     setImageUri(null);
     setOcr(null);
     setDate(''); setDescription(''); setAmount('');
@@ -348,347 +420,337 @@ export default function CameraScreen() {
     setSaveTried(false);
   }
 
-  // ── OCR loading ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // OCR loading
+  // ─────────────────────────────────────────────────────────────────────────
   if (stage === 'ocr') {
     return (
-      <View style={s.ocrScreen}>
-        <View style={s.ocrCard}>
-          {imageUri && <Image source={{ uri: imageUri }} style={s.ocrPreview} blurRadius={1} />}
-          <View style={s.ocrOverlay}>
-            <ActivityIndicator size="large" color={Colors.black} />
-            <Text style={[Typography.bodyMedium, { marginTop: 12, color: Colors.textPrimary }]}>
-              AI 正在识别收据...
-            </Text>
-            <Text style={[Typography.caption, { marginTop: 4 }]}>
-              由 Claude Vision 提供支持
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={s.ocrCancelBtn}
-            onPress={() => { cancelOcrRef.current = true; handleReset(); }}
-          >
-            <Text style={s.ocrCancelText}>✕ 取消识别</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      <AmbientBackground>
+        <SafeAreaView style={s.ocrScreen}>
+          <GlassCard preset="thick" radius={Radius.xl} shadow="hero" style={{ marginHorizontal: Spacing.md }} contentStyle={{ overflow: 'hidden' }}>
+            {imageUri && (
+              <Image source={{ uri: imageUri }} style={s.ocrPreview} blurRadius={2} />
+            )}
+            <View style={s.ocrOverlay}>
+              <ActivityIndicator size="large" color={Colors.textPrimary} />
+              <Text style={[Typography.bodyMedium, { marginTop: 12, color: Colors.textPrimary }]}>
+                AI 正在识别收据…
+              </Text>
+              <Text style={[Typography.caption, { marginTop: 4 }]}>
+                由 {providerLabel} 提供识别
+              </Text>
+            </View>
+            <Pressable
+              style={({ pressed }) => [s.ocrCancelBtn, pressed && { opacity: 0.55 }]}
+              onPress={() => { cancelOcrRef.current = true; handleReset(); }}
+            >
+              <Text style={s.ocrCancelText}>✕ 取消识别</Text>
+            </Pressable>
+          </GlassCard>
+        </SafeAreaView>
+      </AmbientBackground>
     );
   }
 
-  // ── Review form ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Review form
+  // ─────────────────────────────────────────────────────────────────────────
   if (stage === 'form' || stage === 'saving') {
     return (
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView style={s.formScreen} contentContainerStyle={s.formContent} showsVerticalScrollIndicator={false}>
+      <AmbientBackground>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+            <ScrollView contentContainerStyle={s.formContent} showsVerticalScrollIndicator={false}>
 
-          {/* Image + OCR badge */}
-          <View style={s.imageContainer}>
-            {imageUri && <Image source={{ uri: imageUri }} style={s.formImage} />}
-            {ocr && ocr.confidence > 0 && (
-              <View style={[s.confidenceBadge, { backgroundColor: ocr.confidence > 0.7 ? Colors.success : Colors.warning }]}>
-                <Text style={s.confidenceText}>
-                  AI 识别 {Math.round(ocr.confidence * 100)}%
-                </Text>
-              </View>
-            )}
-          </View>
+              {imageUri && (
+                <View style={s.imageContainer}>
+                  <Image source={{ uri: imageUri }} style={s.formImage} />
+                  {ocr && ocr.confidence > 0 && (
+                    <View style={[s.confidenceBadge, { backgroundColor: ocr.confidence > 0.7 ? Colors.success : Colors.warning }]}>
+                      <Text style={s.confidenceText}>
+                        AI 识别 {Math.round(ocr.confidence * 100)}%
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
 
-          {/* Fields */}
-          <View style={s.card}>
-            <Text style={Typography.label}>基本信息</Text>
+              <GlassCard preset="regular" contentStyle={s.cardContent}>
+                <Text style={Typography.label}>基本信息</Text>
+                <FormField label="日期" value={date} onChange={setDate} placeholder="YYYY-MM-DD" hasError={saveTried && !date.trim()} />
+                <FormField label="商户名称" value={description} onChange={setDescription} placeholder="商店 / 餐厅名称" />
 
-            <FormField
-              label="日期"
-              value={date}
-              onChange={setDate}
-              placeholder="YYYY-MM-DD"
-              hasError={saveTried && !date.trim()}
-            />
-            <FormField label="商户名称" value={description} onChange={setDescription} placeholder="商店 / 餐厅名称" />
+                <View style={s.row}>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <FormField
+                      label="金额"
+                      value={amount}
+                      onChange={setAmount}
+                      placeholder="0.00"
+                      keyboard="decimal-pad"
+                      hasError={saveTried && (!amount.trim() || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[Typography.label, { marginBottom: 6, marginTop: 12 }]}>货币</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      {COMMON_CURRENCIES.slice(0, 6).map((c) => (
+                        <TouchableOpacity
+                          key={c}
+                          style={[s.chip, currency === c && s.chipActive]}
+                          onPress={() => setCurrency(c)}
+                        >
+                          <Text style={[s.chipText, currency === c && s.chipTextActive]}>{c}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                </View>
 
-            <View style={s.row}>
-              <View style={{ flex: 1, marginRight: 8 }}>
-                <FormField
-                  label="金额"
-                  value={amount}
-                  onChange={setAmount}
-                  placeholder="0.00"
-                  keyboard="decimal-pad"
-                  hasError={saveTried && (!amount.trim() || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[Typography.label, { marginBottom: 6 }]}>货币</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  {COMMON_CURRENCIES.slice(0, 6).map((c) => (
+                {(amountUsd != null || amountCny != null) && (
+                  <View style={s.conversionRow}>
+                    {amountUsd != null && (
+                      <View style={s.conversionBadge}>
+                        <Text style={s.conversionText}>≈ ${amountUsd.toFixed(2)} USD</Text>
+                      </View>
+                    )}
+                    {amountCny != null && (
+                      <View style={s.conversionBadge}>
+                        <Text style={s.conversionText}>≈ ¥{amountCny.toFixed(2)} CNY</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+              </GlassCard>
+
+              <GlassCard preset="regular" contentStyle={s.cardContent}>
+                <Text style={Typography.label}>所有货币</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                  {COMMON_CURRENCIES.map((c) => (
                     <TouchableOpacity
                       key={c}
                       style={[s.chip, currency === c && s.chipActive]}
                       onPress={() => setCurrency(c)}
                     >
-                      <Text style={[s.chipText, currency === c && s.chipTextActive]}>{c}</Text>
+                      <Text style={[s.chipText, currency === c && s.chipTextActive]}>
+                        {CURRENCY_LABELS[c] ?? c}
+                      </Text>
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
-              </View>
-            </View>
-            {/* Live conversion preview */}
-            {(amountUsd != null || amountCny != null) && (
-              <View style={s.conversionRow}>
-                {amountUsd != null && (
-                  <View style={s.conversionBadge}>
-                    <Text style={s.conversionText}>≈ ${amountUsd.toFixed(2)} USD</Text>
-                  </View>
-                )}
-                {amountCny != null && (
-                  <View style={s.conversionBadge}>
-                    <Text style={s.conversionText}>≈ ¥{amountCny.toFixed(2)} CNY</Text>
-                  </View>
-                )}
-              </View>
-            )}
-          </View>
+              </GlassCard>
 
-          {/* Full currency picker */}
-          <View style={s.card}>
-            <Text style={Typography.label}>所有货币</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
-              {COMMON_CURRENCIES.map((c) => (
-                <TouchableOpacity
-                  key={c}
-                  style={[s.chip, currency === c && s.chipActive]}
-                  onPress={() => setCurrency(c)}
-                >
-                  <Text style={[s.chipText, currency === c && s.chipTextActive]}>
-                    {CURRENCY_LABELS[c] ?? c}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+              <GlassCard preset="regular" contentStyle={s.cardContent}>
+                <Text style={Typography.label}>费用分类</Text>
+                <View style={s.categoryGrid}>
+                  {RECEIPT_CATEGORIES.map((c) => (
+                    <TouchableOpacity
+                      key={c}
+                      style={[s.categoryChip, category === c && s.categoryChipActive]}
+                      onPress={() => setCategory(c as ReceiptCategory)}
+                    >
+                      <Text style={s.categoryIcon}>{CATEGORY_ICONS[c]}</Text>
+                      <Text style={[s.categoryText, category === c && s.categoryTextActive]}>
+                        {CATEGORY_LABELS[c] ?? c}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </GlassCard>
+
+              <GlassCard preset="regular" contentStyle={s.cardContent}>
+                <Text style={Typography.label}>备注</Text>
+                <TextInput
+                  style={[s.input, s.notesInput, { marginTop: 8 }]}
+                  value={notes}
+                  onChangeText={setNotes}
+                  placeholder="添加备注（可选）"
+                  placeholderTextColor={Colors.textTertiary}
+                  multiline
+                />
+              </GlassCard>
+
+              <GlassCard preset="regular" contentStyle={s.cardContent}>
+                <Text style={Typography.label}>付款凭证 <Text style={{ color: Colors.textTertiary, fontWeight: '400' }}>（可选）</Text></Text>
+                {paymentImageUri ? (
+                  <View style={{ marginTop: 10 }}>
+                    <Image source={{ uri: paymentImageUri }} style={s.paymentThumb} />
+                    {proofMatchStatus === 'checking' && (
+                      <View style={s.matchResultRow}>
+                        <ActivityIndicator size="small" color={Colors.textPrimary} />
+                        <Text style={s.matchResultText}>正在匹配金额...</Text>
+                      </View>
+                    )}
+                    {proofMatchStatus === 'matched' && (
+                      <View style={[s.matchResultRow, s.matchResultGreen]}>
+                        <Ionicons name="checkmark-circle" size={16} color="#0F766E" />
+                        <Text style={s.matchResultText}>金额匹配 · {proofMatchDetail}</Text>
+                      </View>
+                    )}
+                    {proofMatchStatus === 'mismatch' && (
+                      <View style={[s.matchResultRow, s.matchResultRed]}>
+                        <Ionicons name="alert-circle" size={16} color="#B91C1C" />
+                        <Text style={s.matchResultText}>金额不符 · {proofMatchDetail}</Text>
+                      </View>
+                    )}
+                    <TouchableOpacity onPress={() => setPaymentImageUri(null)} style={s.paymentRemove}>
+                      <Text style={s.paymentRemoveText}>✕ 移除凭证</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={s.paymentBtnRow}>
+                    <TouchableOpacity style={s.paymentBtn} onPress={handlePickPaymentFromCamera}>
+                      <Ionicons name="camera-outline" size={18} color={Colors.textPrimary} />
+                      <Text style={s.paymentBtnText}>拍照</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.paymentBtn} onPress={handlePickPaymentFromLibrary}>
+                      <Ionicons name="image-outline" size={18} color={Colors.textPrimary} />
+                      <Text style={s.paymentBtnText}>相册</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </GlassCard>
+
+              <Pressable
+                style={({ pressed }) => [s.primaryBtn, stage === 'saving' && s.btnDisabled, pressed && { opacity: 0.85 }]}
+                onPress={() => handleSave(false)}
+                disabled={stage === 'saving'}
+              >
+                {stage === 'saving'
+                  ? <ActivityIndicator color={Colors.textInverse} />
+                  : <Text style={s.primaryBtnText}>保存收据</Text>}
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [s.draftBtn, stage === 'saving' && s.btnDisabled, pressed && { opacity: 0.7 }]}
+                onPress={() => handleSave(true)}
+                disabled={stage === 'saving'}
+              >
+                <Text style={s.draftBtnText}>保存草稿</Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [s.ghostBtn, pressed && { opacity: 0.5 }]}
+                onPress={handleReset}
+              >
+                <Text style={s.ghostBtnText}>丢弃</Text>
+              </Pressable>
             </ScrollView>
-          </View>
-
-          {/* Category */}
-          <View style={s.card}>
-            <Text style={Typography.label}>费用分类</Text>
-            <View style={s.categoryGrid}>
-              {RECEIPT_CATEGORIES.map((c) => (
-                <TouchableOpacity
-                  key={c}
-                  style={[s.categoryChip, category === c && s.categoryChipActive]}
-                  onPress={() => setCategory(c as ReceiptCategory)}
-                >
-                  <Text style={s.categoryIcon}>{CATEGORY_ICONS[c]}</Text>
-                  <Text style={[s.categoryText, category === c && s.categoryTextActive]}>
-                    {CATEGORY_LABELS[c] ?? c}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          {/* Notes */}
-          <View style={s.card}>
-            <Text style={Typography.label}>备注</Text>
-            <TextInput
-              style={[s.input, s.notesInput, { marginTop: 8 }]}
-              value={notes}
-              onChangeText={setNotes}
-              placeholder="添加备注（可选）"
-              placeholderTextColor={Colors.textTertiary}
-              multiline
-            />
-          </View>
-
-          {/* Payment screenshot */}
-          <View style={s.card}>
-            <Text style={Typography.label}>付款凭证 <Text style={{ color: Colors.textTertiary, fontWeight: '400' }}>（可选）</Text></Text>
-            {paymentImageUri ? (
-              <View style={{ marginTop: 10 }}>
-                <Image source={{ uri: paymentImageUri }} style={s.paymentThumb} />
-                {/* Match result */}
-                {proofMatchStatus === 'checking' && (
-                  <View style={s.matchResultRow}>
-                    <ActivityIndicator size="small" color={Colors.black} />
-                    <Text style={s.matchResultText}>正在匹配金额...</Text>
-                  </View>
-                )}
-                {proofMatchStatus === 'matched' && (
-                  <View style={[s.matchResultRow, s.matchResultGreen]}>
-                    <Text style={s.matchResultIcon}>✓</Text>
-                    <Text style={s.matchResultText}>金额匹配 · {proofMatchDetail}</Text>
-                  </View>
-                )}
-                {proofMatchStatus === 'mismatch' && (
-                  <View style={[s.matchResultRow, s.matchResultRed]}>
-                    <Text style={s.matchResultIcon}>⚠</Text>
-                    <Text style={s.matchResultText}>金额不符 · {proofMatchDetail}</Text>
-                  </View>
-                )}
-                <TouchableOpacity onPress={() => setPaymentImageUri(null)} style={s.paymentRemove}>
-                  <Text style={s.paymentRemoveText}>✕ 移除凭证</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View style={s.paymentBtnRow}>
-                <TouchableOpacity style={s.paymentBtn} onPress={handlePickPaymentFromCamera}>
-                  <Text style={s.paymentBtnIcon}>📷</Text>
-                  <Text style={s.paymentBtnText}>拍照</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.paymentBtn} onPress={handlePickPaymentFromLibrary}>
-                  <Text style={s.paymentBtnIcon}>🖼</Text>
-                  <Text style={s.paymentBtnText}>相册</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-
-          {/* Actions */}
-          <TouchableOpacity
-            style={[s.primaryBtn, stage === 'saving' && s.btnDisabled]}
-            onPress={() => handleSave(false)}
-            disabled={stage === 'saving'}
-          >
-            {stage === 'saving'
-              ? <ActivityIndicator color={Colors.textInverse} />
-              : <Text style={s.primaryBtnText}>保存收据</Text>
-            }
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[s.draftBtn, stage === 'saving' && s.btnDisabled]}
-            onPress={() => handleSave(true)}
-            disabled={stage === 'saving'}
-          >
-            <Text style={s.draftBtnText}>保存草稿</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={s.ghostBtn} onPress={handleReset}>
-            <Text style={s.ghostBtnText}>丢弃</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </KeyboardAvoidingView>
+          </SafeAreaView>
+        </KeyboardAvoidingView>
+      </AmbientBackground>
     );
   }
 
-  // ── Camera view (entered via 拍照识别 button) ────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // Camera viewfinder
+  // ─────────────────────────────────────────────────────────────────────────
   if (stage === 'camera') {
     if (!permission) return <View style={s.container} />;
     if (!permission.granted) {
       return (
-        <SafeAreaView style={s.permissionScreen}>
-          <View style={s.permissionCard}>
-            <Text style={s.permissionIcon}>📷</Text>
-            <Text style={[Typography.h2, s.center]}>需要相机权限</Text>
-            <Text style={[Typography.body, s.center, { color: Colors.textSecondary, marginTop: 8 }]}>
-              ReceiptSnap 需要访问相机来拍摄收据照片
-            </Text>
-            <TouchableOpacity style={s.primaryBtn} onPress={requestPermission}>
-              <Text style={s.primaryBtnText}>允许访问相机</Text>
-            </TouchableOpacity>
-          </View>
-        </SafeAreaView>
+        <AmbientBackground>
+          <SafeAreaView style={s.permissionScreen}>
+            <GlassCard preset="thick" shadow="lg" contentStyle={s.permissionCard}>
+              <Ionicons name="camera-outline" size={56} color={Colors.textPrimary} />
+              <Text style={[Typography.h2, s.center, { marginTop: 12 }]}>需要相机权限</Text>
+              <Text style={[Typography.body, s.center, { color: Colors.textSecondary, marginTop: 8 }]}>
+                ReceiptSnap 需要访问相机来拍摄收据照片
+              </Text>
+              <Pressable
+                style={({ pressed }) => [s.primaryBtn, { marginTop: 20 }, pressed && { opacity: 0.85 }]}
+                onPress={requestPermission}
+              >
+                <Text style={s.primaryBtnText}>允许访问相机</Text>
+              </Pressable>
+            </GlassCard>
+          </SafeAreaView>
+        </AmbientBackground>
       );
     }
 
     const zoomDisplay = (1 + zoom * 4).toFixed(1);
+    const activePreset = ZOOM_PRESETS.findIndex((p) => Math.abs(p.value - zoom) < 0.02);
+
     return (
       <View style={s.container} {...pinchResponder.panHandlers}>
         <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" zoom={zoom} />
 
-        {/* Top: back button + hint */}
+        {/* Top: back + hint */}
         <SafeAreaView style={s.cameraTop}>
-          <TouchableOpacity style={s.cameraBackBtn} onPress={() => setStage('idle')}>
-            <Text style={s.cameraBackBtnText}>✕</Text>
-          </TouchableOpacity>
+          <Pressable style={({ pressed }) => [s.cameraBackBtn, pressed && { opacity: 0.7 }]} onPress={() => navigation.goBack()}>
+            <Ionicons name="close" size={20} color="#FFFFFF" />
+          </Pressable>
           <View style={s.hintPill}>
+            <BlurView intensity={50} tint="dark" style={StyleSheet.absoluteFill} />
             <Text style={s.hintText}>将收据放入画面内</Text>
+            <Text style={s.hintSubText}>横版发票请保持手机竖向，让发票横躺入画</Text>
           </View>
-          <View style={{ width: 36 }} />
+          <View style={{ width: 40 }} />
         </SafeAreaView>
 
-        {/* Zoom badge */}
-        {zoom > 0.01 && (
+        {/* Zoom badge (mid-screen during pinch) */}
+        {zoom > 0.01 && activePreset === -1 && (
           <View style={s.zoomBadge} pointerEvents="none">
             <Text style={s.zoomBadgeText}>{zoomDisplay}×</Text>
           </View>
         )}
 
-        {/* Bottom controls */}
+        {/* Bottom: zoom presets + shutter row */}
         <SafeAreaView edges={['bottom']} style={s.cameraBottom}>
-          <View style={s.cameraBottomRow}>
-            <TouchableOpacity style={s.libraryBtn} onPress={handlePickFromLibrary}>
-              <Text style={s.libraryIcon}>🖼</Text>
-              <Text style={s.libraryText}>相册</Text>
-            </TouchableOpacity>
+          {/* Zoom preset capsule */}
+          <View style={s.zoomCapsuleWrap}>
+            <BlurView intensity={50} tint="dark" style={StyleSheet.absoluteFill} />
+            <View style={s.zoomCapsuleRow}>
+              {ZOOM_PRESETS.map((p, i) => {
+                const isActive = i === activePreset;
+                return (
+                  <Pressable
+                    key={p.label}
+                    onPress={() => setZoomPreset(p.value)}
+                    style={({ pressed }) => [
+                      s.zoomPresetBtn,
+                      isActive && s.zoomPresetBtnActive,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text style={[s.zoomPresetText, isActive && s.zoomPresetTextActive]}>
+                      {p.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
 
-            <TouchableOpacity style={s.shutter} onPress={handleCapture} activeOpacity={0.8}>
+          <View style={s.cameraBottomRow}>
+            <Pressable style={({ pressed }) => [s.libraryBtn, pressed && { opacity: 0.7 }]} onPress={handlePickFromLibrary}>
+              <Ionicons name="image-outline" size={28} color="#FFFFFF" />
+              <Text style={s.libraryText}>相册</Text>
+            </Pressable>
+
+            <Pressable style={({ pressed }) => [s.shutter, pressed && { opacity: 0.85 }]} onPress={handleCapture}>
               <View style={s.shutterRing}>
                 <View style={s.shutterInner} />
               </View>
-            </TouchableOpacity>
+            </Pressable>
 
-            <TouchableOpacity
-              style={s.zoomResetBtn}
-              onPress={() => { setZoom(0); zoomRef.current = 0; }}
+            <Pressable
+              style={({ pressed }) => [s.zoomResetBtn, pressed && { opacity: 0.7 }]}
+              onPress={() => setZoomPreset(0)}
             >
-              <Text style={s.zoomResetText}>
-                {zoom > 0.01 ? `${zoomDisplay}×` : '1×'}
-              </Text>
-            </TouchableOpacity>
+              <Text style={s.zoomResetText}>{zoom > 0.01 ? `${zoomDisplay}×` : '1×'}</Text>
+            </Pressable>
           </View>
         </SafeAreaView>
       </View>
     );
   }
 
-  // ── Landing page (default idle state) ───────────────────────────────────
-  return (
-    <SafeAreaView style={s.landingScreen}>
-      {/* Decorative background blobs */}
-      <View style={[s.deco, s.decoTL]} pointerEvents="none" />
-      <View style={[s.deco, s.decoBR]} pointerEvents="none" />
-
-      <View style={s.landingContent}>
-
-        {/* Logo + wordmark */}
-        <View style={s.landingLogoSection}>
-          {/* Viewfinder wrapper + corner brackets */}
-          <View style={s.logoViewfinder}>
-            <View style={[s.corner, s.cornerTL]} />
-            <View style={[s.corner, s.cornerTR]} />
-            <View style={[s.corner, s.cornerBL]} />
-            <View style={[s.corner, s.cornerBR]} />
-            <View style={s.logoBadge}>
-              <Ionicons name="receipt-outline" size={52} color="#fff" />
-            </View>
-          </View>
-          <Text style={s.logoWordmark}>ReceiptSnap</Text>
-          <Text style={s.logoTagline}>AI 智能识别 · 轻松管理报销</Text>
-        </View>
-
-        {/* Two action buttons */}
-        <View style={s.landingBtns}>
-          <TouchableOpacity
-            style={s.landingPrimaryBtn}
-            onPress={handleStartCamera}
-            activeOpacity={0.85}
-          >
-            <Text style={s.landingBtnIcon}>📷</Text>
-            <Text style={s.landingPrimaryBtnText}>拍照识别</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={s.landingSecondaryBtn}
-            onPress={handleManualEntry}
-            activeOpacity={0.85}
-          >
-            <Text style={s.landingBtnIcon}>✏</Text>
-            <Text style={s.landingSecondaryBtnText}>手动录入</Text>
-          </TouchableOpacity>
-        </View>
-
-      </View>
-    </SafeAreaView>
-  );
+  // The landing UI now lives in HomeScreen — this screen is opened explicitly
+  // from there and starts in 'camera' or 'form' stage. If we ever land here
+  // with no matching stage we just bail back to home.
+  return null;
 }
 
 function FormField({
@@ -722,54 +784,53 @@ function FormField({
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
 
-  // Zoom
-  zoomBadge: {
-    position: 'absolute', top: '45%', alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 8,
-    paddingHorizontal: 12, paddingVertical: 6, pointerEvents: 'none' as any,
-  },
-  zoomBadgeText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  zoomResetBtn: {
-    width: 52, height: 52, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 26,
-  },
-  zoomResetText: { color: '#fff', fontSize: 13, fontWeight: '700' },
-
-  // Permission
-  permissionScreen: { flex: 1, backgroundColor: Colors.background, justifyContent: 'center', padding: Spacing.lg },
-  permissionCard: { backgroundColor: Colors.surface, borderRadius: Radius.xl, padding: Spacing.xl, alignItems: 'center', ...Shadows.md },
-  permissionIcon: { fontSize: 56, marginBottom: Spacing.md },
+  // ── Permission card ────────────────────────────────────────────────────
+  permissionScreen: { flex: 1, justifyContent: 'center', padding: Spacing.lg },
+  permissionCard: { padding: Spacing.xl, alignItems: 'center' },
   center: { textAlign: 'center' },
 
-  // OCR loading
-  ocrScreen: { flex: 1, backgroundColor: Colors.background, justifyContent: 'center', padding: Spacing.lg },
-  ocrCard: { borderRadius: Radius.xl, overflow: 'hidden', backgroundColor: Colors.surface, ...Shadows.lg },
-  ocrPreview: { width: '100%', height: 240, resizeMode: 'cover' },
+  // ── OCR loading ────────────────────────────────────────────────────────
+  ocrScreen: { flex: 1, justifyContent: 'center' },
+  ocrPreview: { width: '100%', height: 240 },
   ocrOverlay: { padding: Spacing.xl, alignItems: 'center' },
+  ocrCancelBtn: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.hairline,
+  },
+  ocrCancelText: { color: Colors.danger, fontSize: 15, fontWeight: '600' },
 
-  // Form
-  formScreen: { flex: 1, backgroundColor: Colors.background },
-  formContent: { padding: Spacing.md, paddingBottom: 48, gap: Spacing.sm },
-  imageContainer: { position: 'relative', borderRadius: Radius.lg, overflow: 'hidden', ...Shadows.md },
+  // ── Form screen ────────────────────────────────────────────────────────
+  formContent: {
+    padding: Spacing.md,
+    paddingTop: Spacing.lg,
+    paddingBottom: 140,
+    gap: Spacing.sm,
+  },
+  imageContainer: {
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+  },
   formImage: { width: '100%', height: 220, resizeMode: 'cover' },
   confidenceBadge: {
-    position: 'absolute', top: 10, right: 10,
+    position: 'absolute',
+    top: 10, right: 10,
     paddingHorizontal: 10, paddingVertical: 5,
     borderRadius: Radius.full,
   },
-  confidenceText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  confidenceText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
 
-  card: {
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    ...Shadows.sm,
-  },
+  cardContent: { padding: Spacing.md },
   row: { flexDirection: 'row', alignItems: 'flex-start' },
 
   input: {
-    backgroundColor: Colors.surfaceSecondary,
-    borderWidth: 1,
+    backgroundColor: Colors.surfaceTertiary,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.border,
     borderRadius: Radius.sm,
     paddingHorizontal: 12,
@@ -777,14 +838,12 @@ const s = StyleSheet.create({
     fontSize: 15,
     color: Colors.textPrimary,
   },
-  inputError: {
-    borderColor: '#EF4444',
-    backgroundColor: '#FFF5F5',
-  },
+  inputError: { borderColor: '#EF4444', backgroundColor: '#FFF5F5' },
   fieldErrorTag: {
     fontSize: 10, fontWeight: '700', color: '#EF4444',
-    backgroundColor: '#FEE2E2', paddingHorizontal: 6,
-    paddingVertical: 2, borderRadius: 4,
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: 4,
   },
   notesInput: { minHeight: 80, textAlignVertical: 'top' },
 
@@ -792,174 +851,70 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: Radius.full,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.border,
     marginRight: 6,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.surfaceTertiary,
   },
-  chipActive: { backgroundColor: Colors.black, borderColor: Colors.black },
+  chipActive: { backgroundColor: Colors.textPrimary, borderColor: Colors.textPrimary },
   chipText: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500' },
-  chipTextActive: { color: '#fff' },
+  chipTextActive: { color: '#FFFFFF', fontWeight: '600' },
 
   categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
   categoryChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 12, paddingVertical: 8,
     borderRadius: Radius.full,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: Colors.border,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.surfaceTertiary,
     gap: 4,
   },
-  categoryChipActive: { backgroundColor: '#F0F0F0', borderColor: Colors.black },
+  categoryChipActive: {
+    backgroundColor: Colors.accentLight,
+    borderColor: Colors.accent,
+  },
   categoryIcon: { fontSize: 14 },
-  categoryText: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500', textTransform: 'capitalize' },
-  categoryTextActive: { color: Colors.black, fontWeight: '600' },
+  categoryText: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500' },
+  categoryTextActive: { color: Colors.accent, fontWeight: '700' },
+
+  conversionRow: { flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' },
+  conversionBadge: {
+    backgroundColor: Colors.surfaceTertiary,
+    paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: Radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.border,
+  },
+  conversionText: { fontSize: 12, fontWeight: '600', color: Colors.textPrimary },
 
   primaryBtn: {
-    backgroundColor: Colors.black,
+    backgroundColor: Colors.textPrimary,
     borderRadius: Radius.md,
     paddingVertical: 16,
     alignItems: 'center',
-    ...Shadows.md,
+    marginTop: Spacing.sm,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
   },
   primaryBtnText: { color: Colors.textInverse, fontSize: 16, fontWeight: '700' },
   btnDisabled: { opacity: 0.6 },
   draftBtn: {
     borderWidth: 1.5,
-    borderColor: Colors.black,
+    borderColor: Colors.textPrimary,
     borderRadius: Radius.md,
     paddingVertical: 14,
     alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.6)',
   },
-  draftBtnText: { color: Colors.black, fontSize: 15, fontWeight: '600' },
+  draftBtnText: { color: Colors.textPrimary, fontSize: 15, fontWeight: '600' },
   ghostBtn: { alignItems: 'center', paddingVertical: 14 },
   ghostBtnText: { color: Colors.danger, fontSize: 15, fontWeight: '500' },
 
-  // Landing page
-  landingScreen: { flex: 1, backgroundColor: Colors.surface },
-  deco: { position: 'absolute', borderRadius: 999, backgroundColor: Colors.black, opacity: 0.04 },
-  decoTL: { width: 220, height: 220, top: -70, left: -70 },
-  decoBR: { width: 300, height: 300, bottom: -90, right: -90 },
-  landingContent: {
-    flex: 1, alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: 32,
-  },
-  landingLogoSection: { alignItems: 'center', marginBottom: 64 },
-  logoViewfinder: {
-    width: 110, height: 110,
-    marginBottom: 22,
-    // overflow: 'visible' is RN default — corners protrude outside without clipping
-  },
-  logoBadge: {
-    width: 110, height: 110, borderRadius: 28,
-    backgroundColor: Colors.black,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.22, shadowRadius: 24, elevation: 10,
-  },
-  corner: {
-    position: 'absolute', width: 16, height: 16,
-    borderColor: Colors.primary, // #0070BA PayPal blue
-  },
-  cornerTL: { top: -6, left: -6, borderTopWidth: 3, borderLeftWidth: 3, borderTopLeftRadius: 4 },
-  cornerTR: { top: -6, right: -6, borderTopWidth: 3, borderRightWidth: 3, borderTopRightRadius: 4 },
-  cornerBL: { bottom: -6, left: -6, borderBottomWidth: 3, borderLeftWidth: 3, borderBottomLeftRadius: 4 },
-  cornerBR: { bottom: -6, right: -6, borderBottomWidth: 3, borderRightWidth: 3, borderBottomRightRadius: 4 },
-  logoWordmark: {
-    fontSize: 34, fontWeight: '800', color: Colors.black,
-    letterSpacing: -1.2, marginBottom: 8,
-  },
-  logoTagline: { fontSize: 14, color: Colors.textTertiary, letterSpacing: 0.2 },
-  landingBtns: { width: '100%', gap: 14 },
-  landingPrimaryBtn: {
-    backgroundColor: Colors.black, borderRadius: Radius.lg,
-    paddingVertical: 18,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15, shadowRadius: 12, elevation: 6,
-  },
-  landingPrimaryBtnText: { color: '#fff', fontSize: 17, fontWeight: '700' },
-  landingSecondaryBtn: {
-    borderWidth: 2, borderColor: Colors.black, borderRadius: Radius.lg,
-    paddingVertical: 17,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-  },
-  landingSecondaryBtnText: { color: Colors.black, fontSize: 17, fontWeight: '600' },
-  landingBtnIcon: { fontSize: 20 },
-
-  // Camera
-  cameraTop: {
-    position: 'absolute', top: 0, left: 0, right: 0,
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm,
-  },
-  cameraBackBtn: {
-    width: 36, height: 36,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 18,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  cameraBackBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  hintPill: {
-    flex: 1, marginHorizontal: 8,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: Radius.full,
-  },
-  hintText: { color: '#fff', fontSize: 13, fontWeight: '500' },
-
-  cameraBottom: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    flexDirection: 'column',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.lg,   // 24 — less horizontal crush
-    paddingBottom: Spacing.xxl,      // 48 — well above tab bar + home indicator
-    paddingTop: Spacing.lg,          // 24 — breathing room at top of controls
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    gap: 16,                          // more space between shutter row and manual entry
-  },
-  cameraBottomRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    width: '100%',
-    paddingHorizontal: Spacing.sm,   // slight inset so buttons don't hug edges
-  },
-  manualEntryBtn: {
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.7)',
-    borderRadius: Radius.full,
-    paddingHorizontal: 32,
-    paddingVertical: 13,             // taller tap target (min 44pt with text)
-  },
-  manualEntryText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  // min 44×44pt touch target (Apple HIG)
-  libraryBtn: { width: 72, minHeight: 44, alignItems: 'center', justifyContent: 'center', gap: 4 },
-  libraryIcon: { fontSize: 28 },
-  libraryText: { color: '#fff', fontSize: 11, fontWeight: '500' },
-
-  shutter: { alignItems: 'center', justifyContent: 'center' },
-  shutterRing: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 4,
-    borderColor: 'rgba(255,255,255,0.8)',
-    padding: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  shutterInner: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: '#fff',
-  },
-
+  // ── Payment thumb / match results ──────────────────────────────────────
   paymentThumb: { width: '100%', height: 160, borderRadius: Radius.sm, resizeMode: 'cover', marginTop: 8 },
   paymentRemove: { marginTop: 8, alignItems: 'center' },
   paymentRemoveText: { color: Colors.danger, fontSize: 13, fontWeight: '500' },
@@ -967,32 +922,144 @@ const s = StyleSheet.create({
   paymentBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 6, paddingVertical: 12,
-    borderWidth: 1.5, borderColor: Colors.border,
-    borderRadius: Radius.sm, backgroundColor: Colors.surfaceSecondary,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: Colors.border,
+    borderRadius: Radius.sm, backgroundColor: Colors.surfaceTertiary,
   },
-  paymentBtnIcon: { fontSize: 18 },
-  paymentBtnText: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
-  conversionRow: { flexDirection: 'row', gap: 8, marginTop: 10, flexWrap: 'wrap' },
-  conversionBadge: {
-    backgroundColor: '#F0F0F0',
-    paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: Radius.full,
-  },
-  conversionText: { fontSize: 12, fontWeight: '600', color: Colors.black },
-
-  ocrCancelBtn: {
-    marginTop: 0, paddingVertical: 16, alignItems: 'center',
-    borderTopWidth: 1, borderTopColor: Colors.border,
-  },
-  ocrCancelText: { color: Colors.danger, fontSize: 15, fontWeight: '600' },
-
+  paymentBtnText: { fontSize: 14, fontWeight: '600', color: Colors.textPrimary },
   matchResultRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginTop: 8, padding: 10, borderRadius: Radius.sm,
-    backgroundColor: Colors.surfaceSecondary,
+    backgroundColor: Colors.surfaceTertiary,
   },
-  matchResultGreen: { backgroundColor: '#D1FAE5' },
-  matchResultRed:   { backgroundColor: '#FEE2E2' },
-  matchResultIcon: { fontSize: 16, fontWeight: '700' },
+  matchResultGreen: { backgroundColor: Colors.successLight, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(52, 199, 89, 0.40)' },
+  matchResultRed:   { backgroundColor: Colors.dangerLight, borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255, 69, 58, 0.40)' },
   matchResultText: { flex: 1, fontSize: 12, color: Colors.textPrimary, fontWeight: '500' },
+
+  // ── Landing page ───────────────────────────────────────────────────────
+  landingScreen: { flex: 1 },
+  landingContent: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 32,
+  },
+  landingLogoSection: { alignItems: 'center', marginBottom: 64 },
+  logoViewfinder: { width: 124, height: 124, marginBottom: 24 },
+  logoBadge: {
+    width: 124, height: 124, borderRadius: 32,
+    backgroundColor: Colors.textPrimary,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.22, shadowRadius: 30,
+  },
+  corner: {
+    position: 'absolute', width: 18, height: 18,
+    borderColor: Colors.accent,
+  },
+  cornerTL: { top: -8, left: -8, borderTopWidth: 3, borderLeftWidth: 3, borderTopLeftRadius: 6 },
+  cornerTR: { top: -8, right: -8, borderTopWidth: 3, borderRightWidth: 3, borderTopRightRadius: 6 },
+  cornerBL: { bottom: -8, left: -8, borderBottomWidth: 3, borderLeftWidth: 3, borderBottomLeftRadius: 6 },
+  cornerBR: { bottom: -8, right: -8, borderBottomWidth: 3, borderRightWidth: 3, borderBottomRightRadius: 6 },
+  logoWordmark: {
+    fontSize: 36, fontWeight: '800', color: Colors.textPrimary,
+    letterSpacing: -1.4, marginBottom: 8,
+  },
+  logoTagline: { fontSize: 14, color: Colors.textTertiary, letterSpacing: 0.2 },
+  landingBtns: { width: '100%', gap: 14 },
+  landingPrimaryBtn: {
+    backgroundColor: Colors.textPrimary, borderRadius: Radius.lg,
+    paddingVertical: 18,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18, shadowRadius: 18,
+  },
+  landingPrimaryBtnText: { color: '#FFFFFF', fontSize: 17, fontWeight: '700' },
+  landingSecondaryBtn: {
+    borderWidth: 1.5, borderColor: Colors.textPrimary, borderRadius: Radius.lg,
+    paddingVertical: 17,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.65)',
+  },
+  landingSecondaryBtnText: { color: Colors.textPrimary, fontSize: 17, fontWeight: '600' },
+
+  // ── Camera viewfinder ──────────────────────────────────────────────────
+  cameraTop: {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingTop: Spacing.sm,
+  },
+  cameraBackBtn: {
+    width: 40, height: 40,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 20,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  hintPill: {
+    flex: 1, marginHorizontal: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: Radius.full,
+    overflow: 'hidden',
+  },
+  hintText: { color: '#FFFFFF', fontSize: 13, fontWeight: '500', textAlign: 'center' },
+  hintSubText: { color: 'rgba(255,255,255,0.75)', fontSize: 10, fontWeight: '400', textAlign: 'center', marginTop: 2 },
+
+  zoomBadge: {
+    position: 'absolute', top: '45%', alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 6,
+  },
+  zoomBadgeText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+
+  cameraBottom: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    flexDirection: 'column',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.xxl,
+    paddingTop: Spacing.lg,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    gap: 16,
+  },
+  cameraBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    paddingHorizontal: Spacing.sm,
+  },
+  zoomCapsuleWrap: {
+    borderRadius: Radius.full,
+    overflow: 'hidden',
+    backgroundColor: Platform.OS === 'ios' ? 'transparent' : 'rgba(20,20,24,0.55)',
+  },
+  zoomCapsuleRow: { flexDirection: 'row', padding: 4, gap: 4 },
+  zoomPresetBtn: {
+    minWidth: 50, paddingVertical: 7, paddingHorizontal: 14,
+    borderRadius: Radius.full,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  zoomPresetBtnActive: {
+    backgroundColor: 'rgba(255,255,255,0.95)',
+  },
+  zoomPresetText: { color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '700' },
+  zoomPresetTextActive: { color: '#0A0A0F' },
+
+  libraryBtn: { width: 72, minHeight: 44, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  libraryText: { color: '#FFFFFF', fontSize: 11, fontWeight: '500' },
+
+  shutter: { alignItems: 'center', justifyContent: 'center' },
+  shutterRing: {
+    width: 80, height: 80, borderRadius: 40,
+    borderWidth: 4, borderColor: 'rgba(255,255,255,0.85)',
+    padding: 4,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  shutterInner: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#FFFFFF' },
+
+  zoomResetBtn: {
+    width: 52, height: 52,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 26,
+  },
+  zoomResetText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
 });
